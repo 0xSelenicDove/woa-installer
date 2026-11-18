@@ -8,9 +8,10 @@ export CC=aarch64-linux-gnu-gcc
 OUT="$PWD/dist/stage"
 rm -rf dist build; mkdir -p "$OUT" build; cd build
 
-curl -fsSL -A "Mozilla/5.0" -O "https://tuxera.com/opensource/ntfs-3g_ntfsprogs-$NTFS_VER.tgz"
-tar xf "ntfs-3g_ntfsprogs-$NTFS_VER.tgz"
-(cd "ntfs-3g_ntfsprogs-$NTFS_VER" &&
+curl -fsSL -o ntfs-3g.tar.gz "https://github.com/tuxera/ntfs-3g/archive/refs/tags/$NTFS_VER.tar.gz"
+tar xf ntfs-3g.tar.gz
+(cd "ntfs-3g-$NTFS_VER" &&
+  autoreconf -fi >/dev/null 2>&1 &&
   ./configure --host=aarch64-linux-gnu --disable-shared --enable-static \
     --with-fuse=internal --disable-ntfsprogs-static --disable-library \
     --disable-mount-helper --disable-mtab --without-uuid \

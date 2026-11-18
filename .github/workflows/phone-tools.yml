@@ -10,7 +10,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu make file curl
+      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu make file curl autoconf automake libtool pkg-config gettext
       - run: sh phone-tools/build.sh
       - uses: actions/upload-artifact@v4
         with:
