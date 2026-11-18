@@ -48,12 +48,6 @@ PT_URL = "https://dl.google.com/android/repository/platform-tools-latest-%s.zip"
     "windows" if IS_WIN else "darwin")
 WIMLIB_WIN_URL = "https://wimlib.net/downloads/wimlib-1.14.4-windows-x86_64-bin.zip"
 
-# Optional per-device defaults. Anything not listed works via --uefi-zip and
-# partition auto-detection / --esp-part / --win-part.
-PROFILES = {
-    "munch": {"repo": "0xSelenicDove/edk2-msm-munch", "esp": "sda35", "win": "sda36"},
-    "munch_in": {"repo": "0xSelenicDove/edk2-msm-munch", "esp": "sda35", "win": "sda36"},
-}
 BYNAME_DIRS = ["/dev/block/bootdevice/by-name", "/dev/block/by-name",
                "/dev/block/platform/*/by-name", "/dev/block/platform/*/*/by-name"]
 ESP_NAMES = ("esp", "winesp", "win_esp", "efi", "uefi_esp")
@@ -316,9 +310,8 @@ def autodetect(ph, names, candidates):
 
 
 def find_partitions(ph, esp, win):
-    prof = PROFILES.get(ph.dev, {})
-    esp = esp or autodetect(ph, None, ESP_NAMES) or prof.get("esp")
-    win = win or autodetect(ph, None, WIN_NAMES) or prof.get("win")
+    esp = esp or autodetect(ph, None, ESP_NAMES)
+    win = win or autodetect(ph, None, WIN_NAMES)
     if not esp or not win:
         return None
     out = {}
@@ -637,11 +630,11 @@ def get_uefi_zip(path, dev, repo):
         if not z.is_file():
             raise Fail("UEFI zip not found: %s" % z)
     else:
-        repo = parse_repo(repo) if repo else PROFILES.get(dev, {}).get("repo")
+        repo = parse_repo(repo) if repo else None
         if not repo:
-            raise Fail("No UEFI zip for '%s'. Pass --uefi-zip PATH or --repo owner/name "
-                       "(or a github.com link)." % dev)
-        say("  no --uefi-zip given; fetching the latest release of %s" % repo)
+            raise Fail("A UEFI installer for '%s' is required. Pass --uefi-zip PATH, or --repo "
+                       "owner/name (or a github.com link) to download the latest release." % dev)
+        say("  fetching the latest UEFI release of %s" % repo)
         tag, asset = find_uefi_release(repo)
         z = CACHE / asset["name"]
         download(asset["browser_download_url"], z, "%s %s" % (asset["name"], tag))

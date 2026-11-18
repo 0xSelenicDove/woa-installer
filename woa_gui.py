@@ -228,7 +228,7 @@ class Wizard(tk.Tk):
         for t in ("A device with an unlocked bootloader and Magisk root",
                   "USB debugging turned on, and a USB cable",
                   "A Windows 11 ARM64 ISO file",
-                  "A UEFI installer zip for your device (optional for the POCO F4)"):
+                  "A UEFI installer zip for your device, or a GitHub repository that publishes one"):
             tk.Label(c, text="✓  " + t, bg=C["card"], fg=C["text"], anchor="w").pack(
                 fill="x", padx=20, pady=3)
         tk.Frame(c, height=12, bg=C["card"]).pack()
@@ -359,8 +359,6 @@ class Wizard(tk.Tk):
         bar = tk.Frame(uefi, bg=C["card"])
         bar.pack(anchor="w", padx=20, pady=12)
         Btn(bar, "Choose zip…", self._pick_uefi, "secondary").pack(side="left")
-        if self._auto_ok():
-            Btn(bar, "Use latest release", self._auto_uefi, "secondary").pack(side="left", padx=8)
         tk.Label(uefi, text="…or download from a GitHub repository", bg=C["card"], fg=C["text"],
                  anchor="w").pack(fill="x", padx=20)
         rrow = tk.Frame(uefi, bg=C["card"])
@@ -394,14 +392,10 @@ class Wizard(tk.Tk):
     def _img_langs(img):
         return img["langs"] or ([img["default_lang"]] if img["default_lang"] else ["en-US"])
 
-    def _auto_ok(self):
-        i = self.s["info"]
-        return isinstance(i, dict) and i["device"] in w.PROFILES
-
     def _files_ok(self):
         iso = self.s["iso"]
         return bool(iso and Path(iso).is_file() and isinstance(self.s["iso_info"], dict)
-                    and (self.s["uefi"] or self._repo_ok() or self._auto_ok()) and not self._zip_problem())
+                    and (self.s["uefi"] or self._repo_ok()) and not self._zip_problem())
 
     def _zip_problem(self):
         z, i = self.s["uefi"], self.s["info"]
@@ -449,8 +443,6 @@ class Wizard(tk.Tk):
                                     fg=C["ok"])
         elif self.s["repo"] and isinstance(self.s["repo_state"], tuple):
             self.uefi_lbl.configure(text="✕ " + self.s["repo_state"][1], fg=C["err"])
-        elif self._auto_ok():
-            self.uefi_lbl.configure(text="The latest release is downloaded automatically.", fg=C["muted"])
         else:
             self.uefi_lbl.configure(text="Required for this device. Choose the zip you were given, "
                                     "or download it from a GitHub repository.", fg=C["muted"])
@@ -483,10 +475,6 @@ class Wizard(tk.Tk):
         if f:
             self.s.update(uefi=f, repo="", repo_state=None)
             self.show(2)
-
-    def _auto_uefi(self):
-        self.s.update(uefi="", repo="", repo_state=None)
-        self.show(2)
 
     def _use_repo(self):
         try:
