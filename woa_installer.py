@@ -178,7 +178,9 @@ class Tools:
 
 
 def locate_wimlib():
-    w = shutil.which("wimlib-imagex")
+    # Finder-launched apps don't inherit the shell PATH, so also look in Homebrew's folders
+    extra = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", "")])
+    w = shutil.which("wimlib-imagex", path=extra)
     if w:
         return w
     if IS_WIN:
@@ -915,7 +917,7 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
     out = Path(tempfile.mkdtemp(prefix="woa-bcd-")) / "BCD"
     with open(out, "wb") as f:
         f.write(ph.adb("exec-out", "su -c 'cat %s'" % old).stdout)
-    ph.su("umount " + esp_mp, check=False)
+    ph.su("umount %s; rmdir %s %s" % (esp_mp, esp_mp, WORK), check=False)   # read-only; tidy up even on --dry-run
     return out
 
 
