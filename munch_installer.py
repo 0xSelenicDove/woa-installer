@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""munch-installer: one-shot Windows 11 ARM64 + edk2-msm UEFI installer for the
-Xiaomi POCO F4 / Redmi K40S (munch), driven from a Windows or macOS PC.
+"""Windows-on-ARM + edk2-msm UEFI installer for rooted Android phones, driven from
+a Windows or macOS PC. Works with any device that has an edk2-msm style UEFI
+installer zip (device names are read from the zip's *_UEFI.fd file).
 
-Automates steps 2-5 of the edk2-msm-munch README plus building the Windows
-install on the phone's existing ESP (sda35) and NTFS (sda36) partitions:
-
-  1. check phone (adb, root, munch, unlocked, partitions)
-  2. back up boot_a (host + phone)
+  1. check phone (adb, root, unlocked bootloader, A/B slots, partitions)
+  2. back up the running boot slot (host + phone)
   3. read the user's ARM64 Windows ISO, pick an edition
-  4. wipe + populate ESP/NTFS partitions over adb (root)
-  5. copy boot_a -> boot_b, run the UEFI installer zip against slot B
-  6. fastboot set_active b, reboot
+  4. wipe + populate the ESP / NTFS partitions over adb (root)
+  5. copy the running boot slot into the other one, run the UEFI installer zip on it
+  6. fastboot set_active <other slot>, reboot
 
 Standard library only. Needs Python 3.8+.
 """
@@ -32,19 +30,26 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CACHE = Path.home() / ".munch-installer"
+CACHE = Path.home() / ".woa-installer"
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
 EXE = ".exe" if IS_WIN else ""
 
-RELEASES_API = "https://api.github.com/repos/0xSelenicDove/edk2-msm-munch/releases/latest"
-UEFI_ASSET = "uefi-installer-munch.zip"
+RELEASES_API = "https://api.github.com/repos/%s/releases/latest"
 PT_URL = "https://dl.google.com/android/repository/platform-tools-latest-%s.zip" % (
     "windows" if IS_WIN else "darwin")
 WIMLIB_WIN_URL = "https://wimlib.net/downloads/wimlib-1.14.4-windows-x86_64-bin.zip"
 
-SUPPORTED_DEVICES = {"munch", "munch_in", "alioth_munch"}
-BOOT_BY_NAME = "/dev/block/bootdevice/by-name"
+# Optional per-device defaults. Anything not listed works via --uefi-zip and
+# partition auto-detection / --esp-part / --win-part.
+PROFILES = {
+    "munch": {"repo": "0xSelenicDove/edk2-msm-munch", "esp": "sda35", "win": "sda36"},
+    "munch_in": {"repo": "0xSelenicDove/edk2-msm-munch", "esp": "sda35", "win": "sda36"},
+}
+BYNAME_DIRS = ["/dev/block/bootdevice/by-name", "/dev/block/by-name",
+               "/dev/block/platform/*/by-name", "/dev/block/platform/*/*/by-name"]
+ESP_NAMES = ("esp", "winesp", "win_esp", "efi", "uefi_esp")
+WIN_NAMES = ("win", "windows", "winos", "win_os", "winpe")
 WORK = "/data/local/tmp/munch-install"          # on the phone
 
 
@@ -77,7 +82,7 @@ def human(n):
 def download(url, dest, what):
     say("  downloading %s ..." % what)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "munch-installer"})
+    req = urllib.request.Request(url, headers={"User-Agent": "woa-installer"})
     with urllib.request.urlopen(req) as r, open(dest, "wb") as f:
         shutil.copyfileobj(r, f)
 
@@ -146,6 +151,9 @@ def run(cmd, check=True, capture=True, **kw):
 class Phone:
     def __init__(self, tools, dry):
         self.t, self.dry = tools, dry
+        self.bydir = None
+        self.slot = ""      # running slot suffix, e.g. "_a" ("" = not A/B)
+        self.dev = ""
 
     def adb(self, *args, **kw):
         return run([self.t.adb, *args], **kw)
@@ -172,6 +180,14 @@ class Phone:
         return subprocess.Popen([self.t.adb, "exec-in", "su -c '%s'" % cmd],
                                 stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    def find_byname(self):
+        for pat in BYNAME_DIRS:
+            out = self.su("for d in %s; do [ -d $d ] && echo $d && break; done" % pat, check=False)
+            if out:
+                self.bydir = out.splitlines()[0]
+                return self.bydir
+        raise Fail("Could not find the partition by-name directory on this device.")
+
     def wait_device(self):
         run([self.t.adb, "start-server"], check=False)
         for _ in range(30):
@@ -187,40 +203,78 @@ class Phone:
 
 def check_phone(ph):
     ph.wait_device()
-    dev = ph.prop("ro.product.device")
-    say("  device: %s (%s)" % (dev, ph.prop("ro.product.model")))
-    if dev not in SUPPORTED_DEVICES:
-        raise Fail("Unsupported device '%s'. Only munch / POCO F4 / Redmi K40S." % dev)
+    names = [ph.prop(p) for p in ("ro.product.device", "ro.product.model", "ro.build.product")]
+    ph.dev = names[0]
+    say("  device: %s (model %s)" % (names[0], names[1]))
     if "uid=0" not in ph.su("id", check=False):
         raise Fail("No root. Grant the adb shell superuser access in Magisk and retry.")
-    vb = ph.prop("ro.boot.verifiedbootstate")
-    if vb and vb != "orange":
-        raise Fail("Bootloader looks locked (verifiedbootstate=%s). Unlock it first." % vb)
-    slot = ph.prop("ro.boot.slot_suffix")
-    say("  root: ok   bootloader: unlocked   current slot: %s" % (slot or "?"))
-    if slot != "_a":
-        say("  WARNING: expected to be running Android from slot A (got %r)." % slot)
-        if not ask_yes("  Continue anyway?"):
-            raise Fail("aborted")
-    return slot
+    if ph.prop("ro.boot.verifiedbootstate") == "green" or ph.prop("ro.boot.flash.locked") == "1":
+        raise Fail("The bootloader looks locked. Unlock it first.")
+    ph.slot = ph.prop("ro.boot.slot_suffix")
+    ph.find_byname()
+    say("  root: ok   running slot: %s   partitions: %s" % (ph.slot or "none (not A/B)", ph.bydir))
+    if not ph.slot:
+        say("  WARNING: this device is not A/B. There is no second boot slot, so the UEFI")
+        say("  would replace your only boot image and Android could only be restored by")
+        say("  flashing the backup. Re-run with --allow-non-ab to accept that.")
+        if not ARGS.allow_non_ab:
+            raise Fail("not an A/B device (use --allow-non-ab to proceed)")
+    return names
+
+
+def check_compat(zip_path, names):
+    with zipfile.ZipFile(zip_path) as zf:
+        fds = [n for n in zf.namelist() if n.endswith("_UEFI.fd")]
+    targets = {n.split("_")[0] for n in fds}
+    say("  UEFI zip targets: %s" % ", ".join(sorted(targets)))
+    if not targets & set(names) and not ARGS.force_device:
+        raise Fail("This UEFI zip is for %s but the phone reports %s. Wrong firmware would\n"
+                   "brick the boot slot. (Override with --force-device only if you are sure.)"
+                   % (", ".join(sorted(targets)), "/".join(n for n in names if n)))
+
+
+def resolve_part(ph, arg):
+    if arg.startswith("/"):
+        return arg
+    if ph.su("[ -e %s/%s ] && echo y" % (ph.bydir, arg), check=False) == "y":
+        return "%s/%s" % (ph.bydir, arg)
+    return "/dev/block/" + arg
+
+
+def autodetect(ph, names, candidates):
+    listing = ph.su("ls %s" % ph.bydir, check=False).split()
+    low = {n.lower(): n for n in listing}
+    for c in candidates:
+        if c in low:
+            return low[c]
+    return None
 
 
 def find_partitions(ph, esp, win):
+    prof = PROFILES.get(ph.dev, {})
+    esp = esp or autodetect(ph, None, ESP_NAMES) or prof.get("esp")
+    win = win or autodetect(ph, None, WIN_NAMES) or prof.get("win")
+    if not esp or not win:
+        listing = ph.su("ls %s" % ph.bydir, check=False).replace("\n", " ")
+        raise Fail(
+            "Could not find the ESP / Windows partitions on this device.\n"
+            "Partitions seen: %s\n"
+            "Create them (README, 'Partitions') and pass --esp-part and --win-part\n"
+            "(a by-name label, or something like sda35)." % listing)
     out = {}
     for label, name in (("ESP", esp), ("Windows", win)):
-        dev = "/dev/block/" + name
+        dev = resolve_part(ph, name)
         sz = ph.su("blockdev --getsize64 " + dev, check=False)
         if not sz.isdigit():
-            raise Fail(
-                "Partition %s (%s) does not exist.\n"
-                "Create the ESP and Windows partitions first (see README, 'Partitions'),\n"
-                "or pass --esp-part/--win-part." % (dev, label))
+            raise Fail("Partition %s (%s) does not exist or is unreadable." % (dev, label))
         out[label] = (dev, int(sz))
-        say("  %-8s %-20s %s" % (label, dev, human(int(sz))))
+        say("  %-8s %-34s %s" % (label, dev, human(int(sz))))
     if out["Windows"][1] < 20 * 1024 ** 3:
         raise Fail("The Windows partition is under 20 GB; it needs room for Windows.")
     if out["ESP"][1] > 2 * 1024 ** 3:
         raise Fail("The ESP is suspiciously large - wrong partition? Check --esp-part.")
+    if out["ESP"][0] == out["Windows"][0]:
+        raise Fail("ESP and Windows partition are the same device.")
     return out
 
 
@@ -299,21 +353,25 @@ def pick_image(images, wanted):
 # --------------------------------------------------------------------------- #
 # UEFI package
 # --------------------------------------------------------------------------- #
-def get_uefi_zip(path):
+def get_uefi_zip(path, dev, repo):
     if path:
         z = Path(path)
         if not z.is_file():
             raise Fail("UEFI zip not found: %s" % z)
     else:
-        z = CACHE / UEFI_ASSET
-        say("  no --uefi-zip given; fetching the latest release")
-        req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "munch-installer"})
+        repo = repo or PROFILES.get(dev, {}).get("repo")
+        if not repo:
+            raise Fail("No UEFI zip for '%s'. Pass --uefi-zip PATH or --repo owner/name." % dev)
+        say("  no --uefi-zip given; fetching the latest release of %s" % repo)
+        req = urllib.request.Request(RELEASES_API % repo, headers={"User-Agent": "woa-installer"})
         with urllib.request.urlopen(req) as r:
             rel = json.load(r)
-        asset = next((a for a in rel.get("assets", []) if a["name"] == UEFI_ASSET), None)
+        asset = next((a for a in rel.get("assets", [])
+                      if re.match(r"uefi-installer.*\.zip$", a["name"])), None)
         if not asset:
-            raise Fail("Latest release (%s) has no %s asset." % (rel.get("tag_name"), UEFI_ASSET))
-        download(asset["browser_download_url"], z, "%s %s" % (UEFI_ASSET, rel.get("tag_name")))
+            raise Fail("Latest release of %s has no uefi-installer*.zip asset." % repo)
+        z = CACHE / asset["name"]
+        download(asset["browser_download_url"], z, "%s %s" % (asset["name"], rel.get("tag_name")))
     with zipfile.ZipFile(z) as zf:
         names = zf.namelist()
     ok = (any(n.endswith("_UEFI.fd") for n in names)
@@ -432,7 +490,7 @@ def build_esp_tree(win_tree, bcd, esp_dir):
     shutil.copy2(bcd, dst / "BCD")
 
 
-def resolve_bcd(ph, arg, esp_mp):
+def resolve_bcd(ph, arg, esp_dev, esp_mp):
     if arg:
         p = Path(arg)
         if not p.is_file():
@@ -442,7 +500,7 @@ def resolve_bcd(ph, arg, esp_mp):
     if tpl.is_file():
         return tpl
     say("  no BCD template; trying to reuse the BCD already on the phone's ESP")
-    mount_vfat(ph, "/dev/block/" + ARGS.esp_part, esp_mp)
+    mount_vfat(ph, esp_dev, esp_mp)
     old = esp_mp + "/EFI/Microsoft/Boot/BCD"
     if ph.su("[ -f %s ] && echo y" % old, check=False) != "y":
         raise Fail(
@@ -458,32 +516,41 @@ def resolve_bcd(ph, arg, esp_mp):
 # --------------------------------------------------------------------------- #
 # Backup / UEFI install / switch
 # --------------------------------------------------------------------------- #
-def backup_boot_a(ph, outdir):
+def other_slot(slot):
+    return {"_a": "_b", "_b": "_a"}.get(slot, "")
+
+
+def backup_boot(ph, outdir):
     outdir.mkdir(parents=True, exist_ok=True)
-    dest = outdir / ("boot_a_stock_%s.img" % time.strftime("%Y%m%d-%H%M%S"))
-    say("  reading boot_a -> %s" % dest)
-    data = ph.adb("exec-out", "su -c 'dd if=%s/boot_a bs=1M 2>/dev/null'" % BOOT_BY_NAME).stdout
-    if len(data) < 16 * 1024 * 1024 or data[:8] != b"ANDROID!":
-        raise Fail("boot_a backup looks wrong (%d bytes). Not continuing." % len(data))
+    src = "%s/boot%s" % (ph.bydir, ph.slot)
+    dest = outdir / ("boot%s_stock_%s_%s.img" % (ph.slot, ph.dev, time.strftime("%Y%m%d-%H%M%S")))
+    say("  reading %s -> %s" % (src, dest))
+    data = ph.adb("exec-out", "su -c 'dd if=%s bs=1M 2>/dev/null'" % src).stdout
+    if len(data) < 8 * 1024 * 1024 or data[:8] != b"ANDROID!":
+        raise Fail("boot backup looks wrong (%d bytes). Not continuing." % len(data))
     dest.write_bytes(data)
-    ph.su("cp %s /sdcard/boot_a_stock.img" % "/dev/block/bootdevice/by-name/boot_a", check=False,
-          mutating=True)
+    ph.su("cp %s /sdcard/boot%s_stock.img" % (src, ph.slot), check=False, mutating=True)
     return dest
 
 
 def install_uefi(ph, zip_path):
-    say("  copying boot_a -> boot_b")
-    ph.su("dd if=%s/boot_a of=%s/boot_b bs=1M" % (BOOT_BY_NAME, BOOT_BY_NAME), mutating=True)
+    dst = other_slot(ph.slot)
+    if ph.slot:
+        say("  copying boot%s -> boot%s" % (ph.slot, dst))
+        ph.su("dd if=%s/boot%s of=%s/boot%s bs=1M" % (ph.bydir, ph.slot, ph.bydir, dst),
+              mutating=True)
     ph.su("rm -rf %s/inst && mkdir -p %s/inst" % (WORK, WORK), mutating=True)
     if not ph.dry:
         ph.adb("push", str(zip_path), WORK + "/uefi-installer.zip")
     ph.su("unzip -o %s/uefi-installer.zip -d %s/inst" % (WORK, WORK), mutating=True)
     ph.su("chmod -R 755 %s/inst" % WORK, mutating=True)
     ub = WORK + "/inst/META-INF/com/google/android/update-binary"
-    ph.su('sed -i "s/^slot=.*/slot=_b/" ' + ub, mutating=True)
-    if not ph.dry and ph.su("grep -c '^slot=_b' " + ub, check=False) != "1":
-        raise Fail("could not retarget the installer at slot B")
-    say("  running the UEFI installer against slot B")
+    # retarget the installer: this device's by-name dir and the slot we want to write
+    ph.su('sed -i "s|^target=.*|target=%s/boot;|; s|^slot=.*|slot=%s|" %s'
+          % (ph.bydir, dst, ub), mutating=True)
+    if not ph.dry and ph.su("grep -c '^slot=%s' %s" % (dst, ub), check=False) != "1":
+        raise Fail("could not retarget the installer at slot %s" % (dst or "(none)"))
+    say("  running the UEFI installer against %s" % ("slot " + dst[1:].upper() if dst else "boot"))
     out = ph.su("cd %s/inst && sh %s dummy 1 %s/uefi-installer.zip 2>&1" % (WORK, ub, WORK),
                 mutating=True)
     say("    " + out.replace("\n", "\n    "))
@@ -491,9 +558,13 @@ def install_uefi(ph, zip_path):
         raise Fail("UEFI installer did not report success - NOT switching slots.")
 
 
-def switch_to_b(ph, tools):
+def switch_to_uefi(ph, tools):
+    dst = other_slot(ph.slot)
     if ph.dry:
-        say("  [dry-run] adb reboot bootloader; fastboot set_active b; fastboot reboot")
+        say("  [dry-run] adb reboot; fastboot set_active %s" % (dst[1:] or "(none)"))
+        return
+    if not dst:
+        ph.adb("reboot", check=False)
         return
     ph.adb("reboot", "bootloader", check=False)
     for _ in range(40):
@@ -501,9 +572,9 @@ def switch_to_b(ph, tools):
             break
         time.sleep(2)
     else:
-        raise Fail("Phone did not appear in fastboot. Hold Power + Volume Down, then run:\n"
-                   "  fastboot set_active b && fastboot reboot")
-    run([tools.fastboot, "set_active", "b"])
+        raise Fail("Phone did not appear in fastboot. Hold the bootloader key combo, then run:\n"
+                   "  fastboot set_active %s && fastboot reboot" % dst[1:])
+    run([tools.fastboot, "set_active", dst[1:]])
     run([tools.fastboot, "reboot"])
 
 
@@ -513,19 +584,22 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--iso", help="Windows 11 ARM64 ISO (prompted if omitted)")
-    ap.add_argument("--uefi-zip", help="uefi-installer-munch.zip (default: latest GitHub release)")
+    ap.add_argument("--uefi-zip", help="UEFI installer zip for your device (default: latest release of a known device)")
+    ap.add_argument("--repo", help="GitHub owner/name to fetch the latest uefi-installer*.zip from")
+    ap.add_argument("--force-device", action="store_true", help="skip the zip-vs-phone device name check")
+    ap.add_argument("--allow-non-ab", action="store_true", help="allow devices without A/B slots (overwrites the only boot image)")
     ap.add_argument("--image-index", type=int, help="install.wim image index (default: Pro)")
     ap.add_argument("--bcd", help="BCD hive for the ESP (default: assets/BCD or the phone's existing one)")
-    ap.add_argument("--esp-part", default="sda35")
-    ap.add_argument("--win-part", default="sda36")
+    ap.add_argument("--esp-part", help="ESP partition: by-name label or sdXN (default: auto-detect)")
+    ap.add_argument("--win-part", help="Windows partition: by-name label or sdXN (default: auto-detect)")
     ap.add_argument("--platform-tools", help="folder with adb/fastboot")
     ap.add_argument("--backup-dir", default=str(CACHE / "backup"))
-    ap.add_argument("--skip-windows", action="store_true", help="only install UEFI into slot B")
+    ap.add_argument("--skip-windows", action="store_true", help="only install the UEFI (skip Windows)")
     ap.add_argument("--no-reboot", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="read-only: show what would be written")
     ARGS = ap.parse_args()
 
-    say("munch-installer - Windows 11 ARM64 on POCO F4 (munch)")
+    say("woa-installer - Windows on ARM + edk2-msm UEFI for rooted Android phones")
     if ARGS.dry_run:
         say("DRY RUN: nothing on the phone will be modified.")
 
@@ -539,14 +613,15 @@ def main():
     ph = Phone(tools, ARGS.dry_run)
 
     step("1/6", "Checking the phone")
-    check_phone(ph)
+    names = check_phone(ph)
+
+    step("2/6", "UEFI package and partitions")
+    uefi = get_uefi_zip(ARGS.uefi_zip, ph.dev, ARGS.repo)
+    check_compat(uefi, names)
     parts = find_partitions(ph, ARGS.esp_part, ARGS.win_part) if not ARGS.skip_windows else None
 
-    step("2/6", "UEFI package")
-    uefi = get_uefi_zip(ARGS.uefi_zip)
-
-    step("3/6", "Backing up boot_a")
-    bk = backup_boot_a(ph, Path(ARGS.backup_dir))
+    step("3/6", "Backing up the stock boot image")
+    bk = backup_boot(ph, Path(ARGS.backup_dir))
     say("  saved %s (keep this!)" % bk)
 
     tmp = Path(tempfile.mkdtemp(prefix="munch-install-"))
@@ -569,7 +644,7 @@ def main():
 
             step("5/6", "Writing Windows to the phone")
             esp_mp, win_mp = WORK + "/esp", WORK + "/win"
-            bcd = resolve_bcd(ph, ARGS.bcd, esp_mp)
+            bcd = resolve_bcd(ph, ARGS.bcd, parts["ESP"][0], esp_mp)
             esp_tree = tmp / "esp"
             esp_tree.mkdir()
             build_esp_tree(tree, bcd, esp_tree)
@@ -594,20 +669,24 @@ def main():
             step("4/6", "Skipping Windows (--skip-windows)")
             step("5/6", "Skipping Windows (--skip-windows)")
 
-        step("6/6", "Installing UEFI into slot B")
+        step("6/6", "Installing UEFI into the other boot slot")
         install_uefi(ph, uefi)
         ph.su("rm -rf " + WORK, check=False, mutating=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     if ARGS.no_reboot:
-        say("\nDone. Boot slot B with:  fastboot set_active b && fastboot reboot")
+        say("\nDone. Boot the UEFI slot with:  fastboot set_active %s && fastboot reboot"
+            % (other_slot(ph.slot)[1:] or "<slot>"))
     else:
-        switch_to_b(ph, tools)
-        say("\nDone. The phone is rebooting into UEFI/Windows (slot B).")
+        switch_to_uefi(ph, tools)
+        say("\nDone. The phone is rebooting into UEFI/Windows.")
         say("First boot runs Windows setup and can take several minutes.")
-    say("Back to Android any time: Boot Manager -> 'Reboot to other slot', or")
-    say("  fastboot set_active a && fastboot reboot")
+    if ph.slot:
+        say("Back to Android any time: Boot Manager -> 'Reboot to other slot', or")
+        say("  fastboot set_active %s && fastboot reboot" % ph.slot[1:])
+    else:
+        say("Restore Android by flashing the backup:  fastboot flash boot <backup.img>")
 
 
 if __name__ == "__main__":
