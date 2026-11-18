@@ -49,8 +49,8 @@ def is_dark():
 
 
 C = DARK if is_dark() else LIGHT
-STEPS = ["Welcome", "Phone", "Files", "Storage", "Review", "Install", "Done"]
-JOBS = ["Check the phone", "Prepare UEFI & partitions", "Back up boot image",
+STEPS = ["Welcome", "Device", "Files", "Storage", "Review", "Install", "Done"]
+JOBS = ["Check the device", "Prepare UEFI & partitions", "Back up boot image",
         "Read Windows ISO", "Write Windows", "Install UEFI"]
 
 
@@ -140,7 +140,7 @@ class Wizard(tk.Tk):
         side.pack_propagate(False)
         tk.Label(side, text="WOA Installer", bg=C["side"], fg=C["side_active"],
                  font=self.f_h, anchor="w").pack(fill="x", padx=24, pady=(28, 2))
-        tk.Label(side, text="Windows on ARM for\nrooted Android phones", bg=C["side"],
+        tk.Label(side, text="Windows on ARM for\nrooted Android devices", bg=C["side"],
                  fg=C["side_text"], font=self.f_small, justify="left", anchor="w"
                  ).pack(fill="x", padx=24, pady=(0, 24))
         self.step_rows = []
@@ -212,34 +212,34 @@ class Wizard(tk.Tk):
 
     # ---- pages
     def p_welcome(self):
-        self.title_("Put Windows on your phone",
+        self.title_("Put Windows on your device",
                     "This guide installs Windows 11 ARM and a UEFI boot loader next to Android. "
                     "It takes about 30-60 minutes, most of it copying files.")
         c = card(self.body)
         c.pack(fill="x")
         tk.Label(c, text="Before you start, you need", bg=C["card"], fg=C["text"], font=self.f_h,
                  anchor="w").pack(fill="x", padx=20, pady=(16, 8))
-        for t in ("A phone with an unlocked bootloader and Magisk root",
+        for t in ("A device with an unlocked bootloader and Magisk root",
                   "USB debugging turned on, and a USB cable",
                   "A Windows 11 ARM64 ISO file",
-                  "A UEFI installer zip for your phone (optional for the POCO F4)"):
+                  "A UEFI installer zip for your device (optional for the POCO F4)"):
             tk.Label(c, text="✓  " + t, bg=C["card"], fg=C["text"], anchor="w").pack(
                 fill="x", padx=20, pady=3)
         tk.Frame(c, height=12, bg=C["card"]).pack()
         self.callout(self.body, "Your boot image is backed up first, and you can rehearse the whole "
                      "install without changing anything. Creating new partitions can still erase "
-                     "all data on the phone, so back up your files.").pack(fill="x", pady=16)
+                     "all data on the device, so back up your files.").pack(fill="x", pady=16)
         self.nav(nxt=lambda: self.show(1), nxt_text="Get started")
 
     def p_phone(self):
-        self.title_("Connect your phone",
+        self.title_("Connect your device",
                     "Plug it in over USB with Android running, then check the connection.")
         steps = ("1.  Settings > Developer options > turn on USB debugging\n"
-                 "2.  Connect the cable and accept the prompt on the phone\n"
+                 "2.  Connect the cable and accept the prompt on the device\n"
                  "3.  When Magisk asks, allow superuser access for the shell")
         tk.Label(self.body, text=steps, bg=C["bg"], fg=C["text"], justify="left",
                  anchor="w").pack(fill="x", pady=(0, 14))
-        self.chk_btn = Btn(self.body, "Check phone", self._probe)
+        self.chk_btn = Btn(self.body, "Check device", self._probe)
         self.chk_btn.pack(anchor="w")
         self.res = card(self.body)
         self.res.pack(fill="x", pady=16)
@@ -281,14 +281,14 @@ class Wizard(tk.Tk):
         tk.Frame(self.res, height=8, bg=C["card"]).pack()
         i = self.s["info"]
         if i is None:
-            self.row(self.res, "wait", "Not checked yet", "Press “Check phone”.")
+            self.row(self.res, "wait", "Not checked yet", "Press “Check device”.")
         elif i == "busy":
             ic = self.row(self.res, "wait", "Checking…", "The first run downloads adb (about 10 MB).")
             self._spin(ic)
         elif i["error"] and not i["device"]:
-            self.row(self.res, "bad", "No phone found", i["error"])
+            self.row(self.res, "bad", "No device found", i["error"])
         else:
-            self.row(self.res, "ok", "Phone connected", "%s (%s)" % (i["model"] or "?", i["device"]))
+            self.row(self.res, "ok", "Device connected", "%s (%s)" % (i["model"] or "?", i["device"]))
             self.row(self.res, "ok" if i["root"] else "bad", "Root access",
                      "" if i["root"] else "Open Magisk > Superuser and allow “Shell”, then check again.")
             if i["locked"] is True:
@@ -315,7 +315,7 @@ class Wizard(tk.Tk):
         threading.Thread(target=lambda: self.q.put(("probed", w.probe())), daemon=True).start()
 
     def p_files(self):
-        self.title_("Choose your files", "Pick the Windows image, and the UEFI zip for your phone.")
+        self.title_("Choose your files", "Pick the Windows image, and the UEFI zip for your device.")
         iso = card(self.body)
         iso.pack(fill="x")
         tk.Label(iso, text="Windows 11 ARM64 ISO", bg=C["card"], fg=C["text"], font=self.f_h,
@@ -363,7 +363,7 @@ class Wizard(tk.Tk):
             return "This zip isn't a UEFI installer (no *_UEFI.fd / BootShim)."
         targets = {n.split("_")[0] for n in fds}
         if isinstance(i, dict) and i["device"] not in targets and i["model"] not in targets:
-            return "This zip is for %s, but your phone is %s." % (", ".join(sorted(targets)), i["device"])
+            return "This zip is for %s, but your device is %s." % (", ".join(sorted(targets)), i["device"])
         return None
 
     def _files_refresh(self):
@@ -379,7 +379,7 @@ class Wizard(tk.Tk):
         elif self._auto_ok():
             self.uefi_lbl.configure(text="The latest release is downloaded automatically.", fg=C["muted"])
         else:
-            self.uefi_lbl.configure(text="Required for this phone. Choose the zip you were given.",
+            self.uefi_lbl.configure(text="Required for this device. Choose the zip you were given.",
                                     fg=C["muted"])
 
     def _pick_iso(self):
@@ -401,7 +401,7 @@ class Wizard(tk.Tk):
 
     def p_storage(self):
         parts = self.s["info"].get("parts")
-        self.title_("Storage", "Windows needs two partitions on the phone: a small boot (ESP) "
+        self.title_("Storage", "Windows needs two partitions on the device: a small boot (ESP) "
                     "partition and a large one for Windows itself.")
         c = card(self.body)
         c.pack(fill="x")
@@ -427,7 +427,7 @@ class Wizard(tk.Tk):
                          fg=C["text"], insertbackground=C["text"], highlightthickness=1,
                          highlightbackground=C["border"]).grid(row=r, column=1, sticky="w")
             self.callout(self.body, "If there is no free space left, userdata is shrunk, which ERASES "
-                         "ALL DATA on the phone. After that the phone restarts, you set Android "
+                         "ALL DATA on the device. After that the device restarts, you set Android "
                          "up again, and run this guide a second time to finish.",
                          "err").pack(fill="x", pady=16)
             self.ack = tk.BooleanVar(value=self.s["ack"])
@@ -450,12 +450,12 @@ class Wizard(tk.Tk):
         items = ["Back up the boot image of your %s" % (i["model"] or i["device"])]
         if self.s["create"]:
             items += ["Create the ESP and Windows partitions",
-                      "Restart the phone, then you run this guide again to install Windows"]
+                      "Restart the device, then you run this guide again to install Windows"]
         else:
             items += ["Format the ESP and Windows partitions",
-                      "Copy Windows from your ISO to the phone",
+                      "Copy Windows from your ISO to the device",
                       "Install the UEFI boot loader in the other slot",
-                      "Restart the phone into Windows"]
+                      "Restart the device into Windows"]
         tk.Frame(c, height=8, bg=C["card"]).pack()
         for n, t in enumerate(items, 1):
             r = tk.Frame(c, bg=C["card"])
@@ -466,14 +466,14 @@ class Wizard(tk.Tk):
         tk.Frame(c, height=8, bg=C["card"]).pack()
         tk.Frame(self.body, height=14, bg=C["bg"]).pack()
         self.dry = tk.BooleanVar(value=self.s["dry"])
-        Check(self.body, "Rehearse first (recommended): reads the phone but changes nothing",
+        Check(self.body, "Rehearse first (recommended): reads the device but changes nothing",
               self.dry, bg=C["bg"], command=self._review_btn).pack(anchor="w")
         self.nonab = tk.BooleanVar(value=self.s["nonab"])
         if not i["ab"]:
-            Check(self.body, "Allow overwriting the only boot image (this phone has no A/B slots)",
+            Check(self.body, "Allow overwriting the only boot image (this device has no A/B slots)",
                   self.nonab, bg=C["bg"], command=self._review_btn).pack(anchor="w", pady=6)
         self.noreb = tk.BooleanVar(value=self.s["noreboot"])
-        Check(self.body, "Don't restart the phone when finished", self.noreb, bg=C["bg"]
+        Check(self.body, "Don't restart the device when finished", self.noreb, bg=C["bg"]
               ).pack(anchor="w", pady=6)
         self.nav(back=lambda: self.show(3), nxt=self._start, nxt_text="Start rehearsal")
         self._review_btn()
@@ -485,7 +485,7 @@ class Wizard(tk.Tk):
     # ---- install
     def p_install(self):
         self.title_("Rehearsing…" if self.s["dry"] else "Installing…",
-                    "Keep the phone connected. You may be asked to confirm a step.")
+                    "Keep the device connected. You may be asked to confirm a step.")
         c = card(self.body)
         c.pack(fill="x")
         tk.Frame(c, height=8, bg=C["card"]).pack()
@@ -622,19 +622,19 @@ class Wizard(tk.Tk):
     def p_done(self):
         kind, msg = self.s["result"]
         if kind == "ok" and self.s["rerun"]:
-            self.title_("Partitions created", "The phone is restarting.")
+            self.title_("Partitions created", "The device is restarting.")
             self.callout(self.body, "If data was erased: finish Android setup, turn USB debugging back "
                          "on, make sure Magisk root works, then run this guide again.", "ok"
                          ).pack(fill="x")
             self.nav(nxt=self.destroy, nxt_text="Close")
         elif kind == "ok" and self.s["dry"]:
-            self.title_("Rehearsal finished", "Nothing on the phone was changed.")
+            self.title_("Rehearsal finished", "Nothing on the device was changed.")
             self.callout(self.body, "Everything checked out. When you're ready, run it for real.",
                          "ok").pack(fill="x")
             self.nav(back=lambda: self.show(4), nxt=self._run_real, nxt_text="Install now")
         elif kind == "ok":
             self.title_("All done", "Windows is installed.")
-            self.callout(self.body, "The phone is restarting into Windows. The first boot runs Windows "
+            self.callout(self.body, "The device is restarting into Windows. The first boot runs Windows "
                          "setup and can take several minutes. To return to Android, open the Boot "
                          "Manager and pick “Reboot to other slot”.", "ok").pack(fill="x")
             self.nav(nxt=self.destroy, nxt_text="Close")

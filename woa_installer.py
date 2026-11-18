@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Windows-on-ARM + edk2-msm UEFI installer for rooted Android phones, driven from
+"""Windows-on-ARM + edk2-msm UEFI installer for rooted Android devices, driven from
 a Windows or macOS PC. Works with any device that has an edk2-msm style UEFI
 installer zip (device names are read from the zip's *_UEFI.fd file).
 
-  1. check phone (adb, root, unlocked bootloader, A/B slots, partitions)
-  2. back up the running boot slot (host + phone)
+  1. check device (adb, root, unlocked bootloader, A/B slots, partitions)
+  2. back up the running boot slot (host + device)
   3. read the user's ARM64 Windows ISO, pick an edition
   4. wipe + populate the ESP / NTFS partitions over adb (root)
   5. copy the running boot slot into the other one, run the UEFI installer zip on it
@@ -54,7 +54,7 @@ BYNAME_DIRS = ["/dev/block/bootdevice/by-name", "/dev/block/by-name",
                "/dev/block/platform/*/by-name", "/dev/block/platform/*/*/by-name"]
 ESP_NAMES = ("esp", "winesp", "win_esp", "efi", "uefi_esp")
 WIN_NAMES = ("win", "windows", "winos", "win_os", "winpe")
-WORK = "/data/local/tmp/woa-install"            # on the phone
+WORK = "/data/local/tmp/woa-install"            # on the device
 TOOLS_REPO = "0xSelenicDove/woa-installer"      # releases carry phone-tools-aarch64.tar.gz
 TOOLS_ASSET = "phone-tools-aarch64.tar.gz"
 PHONE_TOOLS = ("mkntfs", "ntfs-3g", "mkfs.fat")  # static aarch64 binaries, see phone-tools/
@@ -255,12 +255,12 @@ class Phone:
             if any(l.endswith("device") for l in lines):
                 return
             if any("unauthorized" in l for l in lines):
-                say("  Phone shows an 'Allow USB debugging?' prompt - accept it.")
+                say("  Device shows an 'Allow USB debugging?' prompt - accept it.")
             time.sleep(2)
-        raise Fail("No phone found over adb. Enable USB debugging and connect it.")
+        raise Fail("No device found over adb. Enable USB debugging and connect it.")
 
 
-def check_phone(ph):
+def check_device(ph):
     ph.wait_device()
     names = [ph.prop(p) for p in ("ro.product.device", "ro.product.model", "ro.build.product")]
     ph.dev = names[0]
@@ -287,7 +287,7 @@ def check_compat(zip_path, names):
     targets = {n.split("_")[0] for n in fds}
     say("  UEFI zip targets: %s" % ", ".join(sorted(targets)))
     if not targets & set(names) and not ARGS.force_device:
-        raise Fail("This UEFI zip is for %s but the phone reports %s. Wrong firmware would\n"
+        raise Fail("This UEFI zip is for %s but the device reports %s. Wrong firmware would\n"
                    "brick the boot slot. (Override with --force-device only if you are sure.)"
                    % (", ".join(sorted(targets)), "/".join(n for n in names if n)))
 
@@ -335,7 +335,7 @@ def find_partitions(ph, esp, win):
 
 
 # --------------------------------------------------------------------------- #
-# Partition creation (GPT edited directly; no sgdisk needed on the phone)
+# Partition creation (GPT edited directly; no sgdisk needed on the device)
 # --------------------------------------------------------------------------- #
 def parse_size(txt):
     m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMGT]?)I?B?", txt.strip().upper())
@@ -498,7 +498,7 @@ def create_partitions(ph, tools):
             break
         time.sleep(2)
     else:
-        raise Fail("Phone did not reach fastboot. Boot it to fastboot manually"
+        raise Fail("Device did not reach fastboot. Boot it to fastboot manually"
                    + (", then run: fastboot erase userdata && fastboot erase metadata" if shrink else ""))
     if shrink:
         say("  erasing userdata + metadata (its filesystem no longer matches)")
@@ -614,7 +614,7 @@ def get_uefi_zip(path, dev, repo):
 
 
 # --------------------------------------------------------------------------- #
-# Phone-side filesystem work
+# Device-side filesystem work
 # --------------------------------------------------------------------------- #
 def mount_ntfs(ph, dev, mp, tl=None):
     ph.su("mkdir -p " + mp, mutating=True)
@@ -627,7 +627,7 @@ def mount_ntfs(ph, dev, mp, tl=None):
         ph.su(cmd + " 2>&1", check=False)
         if ph.su("grep -c ' %s ' /proc/mounts" % mp, check=False).strip() not in ("", "0"):
             return
-    raise Fail("Could not mount NTFS read-write on the phone (tried ntfs-3g and the kernel ntfs3).")
+    raise Fail("Could not mount NTFS read-write on the device (tried ntfs-3g and the kernel ntfs3).")
 
 
 def mount_vfat(ph, dev, mp):
@@ -636,7 +636,7 @@ def mount_vfat(ph, dev, mp):
 
 
 def ensure_phone_tools(ph):
-    """Make mkntfs / ntfs-3g / mkfs.fat runnable on the phone; returns {name: path}."""
+    """Make mkntfs / ntfs-3g / mkfs.fat runnable on the device; returns {name: path}."""
     found, missing = {}, []
     for t in PHONE_TOOLS:
         alt = {"mkntfs": "mkntfs mkfs.ntfs", "ntfs-3g": "ntfs-3g mount.ntfs",
@@ -648,19 +648,19 @@ def ensure_phone_tools(ph):
             missing.append(t)
     if not missing:
         return found
-    say("  phone is missing: %s - pushing static builds" % ", ".join(missing))
+    say("  device is missing: %s - pushing static builds" % ", ".join(missing))
     src = Path(ARGS.phone_tools) if ARGS.phone_tools else None
     if src is None:
         d = CACHE / "phone-tools"
         tgz = CACHE / TOOLS_ASSET
         if not d.exists():
             base = "https://github.com/%s/releases/latest/download/" % TOOLS_REPO
-            download(base + TOOLS_ASSET, tgz, "NTFS/FAT tools for the phone")
+            download(base + TOOLS_ASSET, tgz, "NTFS/FAT tools for the device")
             download(base + TOOLS_ASSET + ".sha256", CACHE / (TOOLS_ASSET + ".sha256"), "checksum")
             want = (CACHE / (TOOLS_ASSET + ".sha256")).read_text().split()[0]
             if hashlib.sha256(tgz.read_bytes()).hexdigest() != want:
                 tgz.unlink()
-                raise Fail("phone tools checksum mismatch")
+                raise Fail("device tools checksum mismatch")
             d.mkdir(parents=True)
             with tarfile.open(tgz) as tf:
                 tf.extractall(d)
@@ -693,7 +693,7 @@ def format_partitions(ph, parts, tl):
 
 
 def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
-    """tar `src` straight into `su tar -x` on the phone."""
+    """tar `src` straight into `su tar -x` on the device."""
     files = total = 0
     for root, _, fs in os.walk(src):
         for f in fs:
@@ -733,7 +733,7 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
     proc.stdin.close()
     err = proc.stderr.read().decode(errors="replace")
     if proc.wait() != 0:
-        raise Fail("tar on the phone failed: " + err)
+        raise Fail("tar on the device failed: " + err)
     print()
 
 
@@ -770,7 +770,7 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
     tpl = HERE / "assets" / "BCD"
     if tpl.is_file():
         return tpl
-    say("  no BCD template; trying to reuse the BCD already on the phone's ESP")
+    say("  no BCD template; trying to reuse the BCD already on the device's ESP")
     try:                # read-only, so it also runs during --dry-run
         ph.adb("shell", "su -c 'mkdir -p %s && umount %s 2>/dev/null; mount -t vfat -o ro %s %s'"
                % (esp_mp, esp_mp, esp_dev, esp_mp), check=False)
@@ -847,7 +847,7 @@ def switch_to_uefi(ph, tools):
             break
         time.sleep(2)
     else:
-        raise Fail("Phone did not appear in fastboot. Hold the bootloader key combo, then run:\n"
+        raise Fail("Device did not appear in fastboot. Hold the bootloader key combo, then run:\n"
                    "  fastboot set_active %s && fastboot reboot" % dst[1:])
     run([tools.fastboot, "set_active", dst[1:]])
     run([tools.fastboot, "reboot"])
@@ -860,10 +860,10 @@ def build_parser():
     ap.add_argument("--iso", help="Windows 11 ARM64 ISO (prompted if omitted)")
     ap.add_argument("--uefi-zip", help="UEFI installer zip for your device (default: latest release of a known device)")
     ap.add_argument("--repo", help="GitHub owner/name to fetch the latest uefi-installer*.zip from")
-    ap.add_argument("--force-device", action="store_true", help="skip the zip-vs-phone device name check")
+    ap.add_argument("--force-device", action="store_true", help="skip the zip-vs-device name check")
     ap.add_argument("--allow-non-ab", action="store_true", help="allow devices without A/B slots (overwrites the only boot image)")
     ap.add_argument("--image-index", type=int, help="install.wim image index (default: Pro)")
-    ap.add_argument("--bcd", help="BCD hive for the ESP (default: assets/BCD or the phone's existing one)")
+    ap.add_argument("--bcd", help="BCD hive for the ESP (default: assets/BCD or the device's existing one)")
     ap.add_argument("--esp-part", help="ESP partition: by-name label or sdXN (default: auto-detect)")
     ap.add_argument("--win-part", help="Windows partition: by-name label or sdXN (default: auto-detect)")
     ap.add_argument("--platform-tools", help="folder with adb/fastboot")
@@ -880,7 +880,7 @@ def build_parser():
 
 
 def probe(argv=None):
-    """Read-only phone inspection for the GUI. Returns a dict of findings."""
+    """Read-only device inspection for the GUI. Returns a dict of findings."""
     global ARGS
     ARGS = build_parser().parse_args(argv or [])
     info = {"error": None, "device": "", "model": "", "root": False, "locked": None,
@@ -910,9 +910,9 @@ def main(argv=None):
     ap = build_parser()
     ARGS = ap.parse_args(argv)
 
-    say("woa-installer - Windows on ARM + edk2-msm UEFI for rooted Android phones")
+    say("woa-installer - Windows on ARM + edk2-msm UEFI for rooted Android devices")
     if ARGS.dry_run:
-        say("DRY RUN: nothing on the phone will be modified.")
+        say("DRY RUN: nothing on the device will be modified.")
 
     iso = ARGS.iso
     if not iso and not ARGS.skip_windows:
@@ -925,8 +925,8 @@ def main(argv=None):
         raise Fail(tools.wimlib_error)
     ph = Phone(tools, ARGS.dry_run)
 
-    step("1/6", "Checking the phone")
-    names = check_phone(ph)
+    step("1/6", "Checking the device")
+    names = check_device(ph)
 
     step("2/6", "UEFI package and partitions")
     uefi = get_uefi_zip(ARGS.uefi_zip, ph.dev, ARGS.repo)
@@ -942,7 +942,7 @@ def main(argv=None):
                            "--esp-part / --win-part." % listing)
             step("2b/6", "Creating the ESP and Windows partitions")
             if create_partitions(ph, tools):
-                say("\nThe phone is rebooting. If data was erased, finish Android setup, enable USB")
+                say("\nThe device is rebooting. If data was erased, finish Android setup, enable USB")
                 say("debugging, make sure root works (reinstall Magisk if needed), then run this")
                 say("installer again WITHOUT --create-partitions.")
             return
@@ -959,7 +959,7 @@ def main(argv=None):
                 wim = find_wim(mp)
                 img = pick_image(list_images(tools, wim), ARGS.image_index)
                 say("  using image %d: %s" % (img["index"], img["name"]))
-                say("\n  This will ERASE %s (ESP) and %s (Windows) on the phone." %
+                say("\n  This will ERASE %s (ESP) and %s (Windows) on the device." %
                     (parts["ESP"][0], parts["Windows"][0]))
                 if not ARGS.dry_run and PROMPT("  Type ERASE to continue: ").strip() != "ERASE":
                     raise Fail("aborted")
@@ -975,7 +975,7 @@ def main(argv=None):
                     run_stream([tools.wimlib, "apply", str(wim), str(img["index"]), str(tree),
                                 "--no-acls"])
 
-            step("5/6", "Writing Windows to the phone")
+            step("5/6", "Writing Windows to the device")
             esp_mp, win_mp = WORK + "/esp", WORK + "/win"
             bcd = resolve_bcd(ph, ARGS.bcd, parts["ESP"][0], esp_mp)
             esp_tree = tmp / "esp"
@@ -994,7 +994,7 @@ def main(argv=None):
                                  (esp_mp + "/EFI/Microsoft/Boot/bootmgfw.efi", "bootmgfw.efi"),
                                  (esp_mp + "/EFI/Microsoft/Boot/BCD", "BCD")):
                     if ph.su("[ -f %s ] && echo y" % f, check=False) != "y":
-                        raise Fail("verification failed: %s missing on the phone" % where)
+                        raise Fail("verification failed: %s missing on the device" % where)
             ph.su("sync", mutating=True)
             ph.su("umount %s; umount %s" % (esp_mp, win_mp), check=False, mutating=True)
             say("  [dry-run] nothing written." if ph.dry else "  Windows files written and verified.")
@@ -1009,14 +1009,14 @@ def main(argv=None):
         shutil.rmtree(tmp, ignore_errors=True)
 
     if ARGS.dry_run:
-        say("\nDry run finished. Nothing on the phone was changed.")
+        say("\nDry run finished. Nothing on the device was changed.")
         return
     if ARGS.no_reboot:
         say("\nDone. Boot the UEFI slot with:  fastboot set_active %s && fastboot reboot"
             % (other_slot(ph.slot)[1:] or "<slot>"))
     else:
         switch_to_uefi(ph, tools)
-        say("\nDone. The phone is rebooting into UEFI/Windows.")
+        say("\nDone. The device is rebooting into UEFI/Windows.")
         say("First boot runs Windows setup and can take several minutes.")
     if ph.slot:
         say("Back to Android any time: Boot Manager -> 'Reboot to other slot', or")

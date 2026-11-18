@@ -1,15 +1,15 @@
 # woa-installer
 
-One-command installer for **Windows on ARM + edk2-msm UEFI** on rooted Android phones, run from a **Windows or macOS** PC. It automates the manual dual-boot flow: back up the running boot slot, put Windows on the ESP + NTFS partitions, copy the boot slot into the other slot, run the UEFI installer zip against it, and boot it.
+One-command installer for **Windows on ARM + edk2-msm UEFI** on rooted Android devices, run from a **Windows or macOS** PC. It automates the manual dual-boot flow: back up the running boot slot, put Windows on the ESP + NTFS partitions, copy the boot slot into the other slot, run the UEFI installer zip against it, and boot it.
 
-You supply a **Windows 11 ARM64 ISO** and, for your phone, a **UEFI installer zip** (`*_UEFI.fd` + `BootShim.Dualboot.bin` + `update-binary`, the edk2-msm format). For known devices (currently POCO F4 / Redmi K40S `munch`) the latest release is downloaded if you omit it; for any other phone pass `--uefi-zip` or `--repo owner/name`.
+You supply a **Windows 11 ARM64 ISO** and, for your device, a **UEFI installer zip** (`*_UEFI.fd` + `BootShim.Dualboot.bin` + `update-binary`, the edk2-msm format). For known devices (currently POCO F4 / Redmi K40S `munch`) the latest release is downloaded if you omit it; for any other device pass `--uefi-zip` or `--repo owner/name`.
 
-> The installer is device-agnostic, but the UEFI firmware is not: Windows only boots on a phone if someone has ported edk2 to it. The installer refuses a zip whose device name does not match the phone (`--force-device` overrides).
+> The installer is device-agnostic, but the UEFI firmware is not: Windows only boots on a device if someone has ported edk2 to it. The installer refuses a zip whose target device name does not match the connected one (`--force-device` overrides).
 
 ## Before you start
 
 * Unlocked bootloader, Magisk root (grant the `adb shell` user superuser), USB debugging on.
-* An **A/B** device (recommended): Android keeps running from the current slot and the UEFI goes in the other one. Non-A/B phones need `--allow-non-ab` and the UEFI replaces your only boot image.
+* An **A/B** device (recommended): Android keeps running from the current slot and the UEFI goes in the other one. Non-A/B devices need `--allow-non-ab` and the UEFI replaces your only boot image.
 * ESP and Windows partitions: auto-detected by label (`esp`, `win`, ...) or via `--esp-part` / `--win-part`. If they don't exist, run once with `--create-partitions` (see below).
 * ~25 GB free on the PC for the extracted image.
 
@@ -17,7 +17,7 @@ PC requirements: Python 3.8+. macOS also needs `brew install wimlib`; on Windows
 
 ## Use
 
-**Guided GUI:** `python3 woa_gui.py` (macOS: double-click `install-macos.command`; Windows: `install-windows.bat`). A seven-step wizard (Welcome, Phone, Files, Storage, Review, Install, Done) checks the phone, validates your ISO and UEFI zip, explains what will be erased, and defaults to a read-only **rehearsal** before the real install. Follows the system light/dark theme. Release downloads: `woa-installer-macos.dmg` (Apple Silicon) and `woa-installer-windows.exe`, both bundling Python and unsigned (macOS: right-click > Open the first time; Windows SmartScreen: More info > Run anyway); from source the GUI needs Tk (included with python.org Python).
+**Guided GUI:** `python3 woa_gui.py` (macOS: double-click `install-macos.command`; Windows: `install-windows.bat`). A seven-step wizard (Welcome, Device, Files, Storage, Review, Install, Done) checks the device, validates your ISO and UEFI zip, explains what will be erased, and defaults to a read-only **rehearsal** before the real install. Follows the system light/dark theme. Release downloads: `woa-installer-macos.dmg` (Apple Silicon) and `woa-installer-windows.exe`, both bundling Python and unsigned (macOS: right-click > Open the first time; Windows SmartScreen: More info > Run anyway); from source the GUI needs Tk (included with python.org Python).
 
 **Command line**
 
@@ -40,16 +40,16 @@ Useful flags: `--uefi-zip PATH`, `--repo owner/name`, `--esp-part`, `--win-part`
 `--create-partitions` (sizes: `--esp-size 512M`, `--win-size 64G`) edits the GPT of the disk holding `userdata`:
 
 * If there is enough free space after the last partition, it just adds `esp` and `win` there.
-* Otherwise it shrinks `userdata` (it must be the last partition). **That erases all phone data**, so you must type `WIPE DATA`. The installer then runs `fastboot erase userdata` + `erase metadata` and reboots; finish Android setup, re-enable USB debugging, make sure root works, and run the installer again.
+* Otherwise it shrinks `userdata` (it must be the last partition). **That erases all device data**, so you must type `WIPE DATA`. The installer then runs `fastboot erase userdata` + `erase metadata` and reboots; finish Android setup, re-enable USB debugging, make sure root works, and run the installer again.
 * The old GPT is saved to `~/.woa-installer/backup/`, both copies are rewritten with valid CRCs, and the result is re-read and verified before rebooting. Always try `--dry-run` first.
 
-## NTFS and FAT on the phone
+## NTFS and FAT on the device
 
-Android has no NTFS-3G, so the installer pushes static aarch64 `mkntfs`, `ntfs-3g` and `mkfs.fat` if the phone lacks them. They come from this repo's release asset `phone-tools-aarch64.tar.gz` (checksum-verified), built by `.github/workflows/phone-tools.yml` / `phone-tools/build.sh`, or from a folder via `--phone-tools DIR`. Both partitions are formatted fresh (NTFS quick-format with the device's sector size).
+Android has no NTFS-3G, so the installer pushes static aarch64 `mkntfs`, `ntfs-3g` and `mkfs.fat` if the device lacks them. They come from this repo's release asset `phone-tools-aarch64.tar.gz` (checksum-verified), built by `.github/workflows/phone-tools.yml` / `phone-tools/build.sh`, or from a folder via `--phone-tools DIR`. Both partitions are formatted fresh (NTFS quick-format with the device's sector size).
 
 ## BCD
 
-The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`). The installer uses, in order: `--bcd`, `assets/BCD`, or the BCD already on the phone's ESP. Put a BCD with the settings from the main repo's *Optimal BCD Configuration* at `assets/BCD` for clean installs.
+The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`). The installer uses, in order: `--bcd`, `assets/BCD`, or the BCD already on the device's ESP. Put a BCD with the settings from the main repo's *Optimal BCD Configuration* at `assets/BCD` for clean installs.
 
 ## Safety
 
@@ -60,4 +60,4 @@ The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`).
 
 ## Status
 
-Not yet run against a real phone, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/test_gpt.py` checks the GPT editor offline. Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Use `--dry-run` first.
+Not yet run against a real device, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/test_gpt.py` checks the GPT editor offline. Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Use `--dry-run` first.
