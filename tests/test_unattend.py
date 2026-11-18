@@ -1,8 +1,9 @@
 """unattend.xml generation: well-formed, right passes/components, escaping, validation."""
-import importlib.util, tempfile
+import importlib.util, sys, tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
 spec = importlib.util.spec_from_file_location("w", Path(__file__).parent.parent / "woa_installer.py")
 w = importlib.util.module_from_spec(spec); spec.loader.exec_module(w)
 NS = {"u": "urn:schemas-microsoft-com:unattend"}
@@ -39,3 +40,18 @@ assert (d / "Windows/Panther/unattend.xml").read_text(encoding="utf-8") == xml
 assert (d / "Windows/Panther/Unattend/Unattend.xml").exists()
 assert b"<drivers" not in xml.encode() and "pnputil" not in w.build_unattend()   # no driver step by default
 print("unattend OK")
+
+# display language is separate from region/format; time zone must be a real Windows ID
+x2 = ET.fromstring(w.build_unattend(locale="en-GB", language="de-DE", timezone="GMT Standard Time"))
+assert x2.find(".//u:UILanguage", NS).text == "de-DE"
+assert x2.find(".//u:UserLocale", NS).text == "en-GB" and x2.find(".//u:InputLocale", NS).text == "en-GB"
+assert x2.find(".//u:TimeZone", NS).text == "GMT Standard Time"
+for bad in (dict(timezone="Mars Standard Time"), dict(language="xx")):
+    try:
+        w.build_unattend(**bad); raise SystemExit("accepted %r" % bad)
+    except w.Fail:
+        pass
+import woa_data as d
+assert len(set(d.TIMEZONES)) == len(d.TIMEZONES) > 130 and "UTC" in d.TIMEZONES
+assert d.locale_label("de-DE") == "German (Germany) · de-DE" and d.locale_label("zz-ZZ") == "zz-ZZ"
+print("language/time zone OK")

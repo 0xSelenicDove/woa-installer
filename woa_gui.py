@@ -16,9 +16,13 @@ import tkinter as tk
 import tkinter.font as tkfont
 import zipfile
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 
-import woa_installer as w
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import woa_data as data  # noqa: E402
+import woa_installer as w  # noqa: E402
 
 LIGHT = dict(bg="#F5F6F8", card="#FFFFFF", border="#E2E5EA", text="#151A23", muted="#667085",
              accent="#4F46E5", accent_hover="#4338CA", accent_fg="#FFFFFF", ok="#16A34A",
@@ -126,7 +130,7 @@ class Wizard(tk.Tk):
         self.q = queue.Queue()
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
                       dry=True, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
-                      host="WOA-DEVICE", locale="en-US", tz="UTC", drivers="",
+                      host="WOA-DEVICE", lang="", locale="", tz="", drivers="", iso_info=None,
                       job=-1, log="", result=None, rerun=False)
         self.page = 0
         self.logbox = None
@@ -347,8 +351,8 @@ class Wizard(tk.Tk):
 
     def _files_ok(self):
         iso = self.s["iso"]
-        return bool(iso and Path(iso).is_file() and (self.s["uefi"] or self._auto_ok())
-                    and not self._zip_problem())
+        return bool(iso and Path(iso).is_file() and isinstance(self.s["iso_info"], dict)
+                    and (self.s["uefi"] or self._auto_ok()) and not self._zip_problem())
 
     def _zip_problem(self):
         z, i = self.s["uefi"], self.s["info"]
@@ -370,8 +374,19 @@ class Wizard(tk.Tk):
     def _files_refresh(self):
         iso = self.s["iso"]
         ok = iso and Path(iso).is_file()
-        self.iso_lbl.configure(text="%s  (%s)" % (Path(iso).name, w.human(Path(iso).stat().st_size))
-                               if ok else "No file chosen")
+        info = self.s["iso_info"]
+        if not ok:
+            self.iso_lbl.configure(text="No file chosen", fg=C["muted"])
+        else:
+            head = "%s  (%s)" % (Path(iso).name, w.human(Path(iso).stat().st_size))
+            if info == "busy":
+                self.iso_lbl.configure(text=head + "\nReading the image…", fg=C["muted"])
+            elif isinstance(info, dict):
+                img = info["image"]
+                langs = ", ".join(data.locale_label(t) for t in info["langs"])
+                self.iso_lbl.configure(text="%s\n✓ %s · ARM64 · %s" % (head, img["name"], langs), fg=C["ok"])
+            elif isinstance(info, tuple):
+                self.iso_lbl.configure(text="%s\n✕ %s" % (head, info[1]), fg=C["err"])
         z = self.s["uefi"]
         if z:
             bad = self._zip_problem()
@@ -387,8 +402,18 @@ class Wizard(tk.Tk):
         f = filedialog.askopenfilename(title="Windows 11 ARM64 ISO",
                                        filetypes=[("ISO image", "*.iso"), ("All files", "*")])
         if f:
-            self.s["iso"] = f
+            self.s.update(iso=f, iso_info="busy", lang="", locale="")
             self.show(2)
+
+            def work():
+                try:
+                    res = w.read_iso_info(f)
+                except w.Fail as e:
+                    res = ("err", str(e))
+                except Exception as e:      # noqa: BLE001 - show anything unexpected
+                    res = ("err", "Could not read the image: %r" % e)
+                self.q.put(("iso", (f, res)))
+            threading.Thread(target=work, daemon=True).start()
 
     def _pick_uefi(self):
         f = filedialog.askopenfilename(title="UEFI installer zip", filetypes=[("Zip", "*.zip")])
@@ -455,17 +480,45 @@ class Wizard(tk.Tk):
         self.setup_card = card(self.body)
         form = tk.Frame(self.setup_card, bg=C["card"])
         form.pack(fill="x", padx=20, pady=14)
-        self.sv = {k: tk.StringVar(value=self.s[k]) for k in ("user", "pw", "host", "locale", "tz")}
+        info = self.s["iso_info"] if isinstance(self.s["iso_info"], dict) else None
+        langs = info["langs"] if info else ["en-US"]
+        if not self.s["lang"]:
+            self.s["lang"] = info["default_lang"] if info else "en-US"
+        if not self.s["locale"]:
+            self.s["locale"] = self.s["lang"] if self.s["lang"] in data.LOCALES else "en-US"
+        if not self.s["tz"]:
+            self.s["tz"] = data.default_timezone()
+        self.sv = {k: tk.StringVar(value=self.s[k]) for k in ("user", "pw", "host")}
+        self.lang_v = tk.StringVar(value=data.locale_label(self.s["lang"]))
+        self.loc_v = tk.StringVar(value=data.locale_label(self.s["locale"]))
+        self.tz_v = tk.StringVar(value=self.s["tz"])
+        self._lang_map = {data.locale_label(t): t for t in langs}
+        self._loc_map = {data.locale_label(t): t for t in sorted(data.LOCALES, key=lambda x: data.LOCALES[x])}
+        if self.loc_v.get() not in self._loc_map:       # unusual tag: still selectable
+            self._loc_map[self.loc_v.get()] = self.s["locale"]
         for r, (lab, key, show) in enumerate((("Account name", "user", None), ("Password (optional)", "pw", "•"),
-                                              ("Device name", "host", None), ("Language", "locale", None),
-                                              ("Time zone", "tz", None))):
+                                              ("Device name", "host", None))):
             tk.Label(form, text=lab, bg=C["card"], fg=C["text"], width=20, anchor="w").grid(row=r, column=0, pady=4)
-            tk.Entry(form, textvariable=self.sv[key], width=28, show=show or "", relief="flat", bg=C["sec"],
+            tk.Entry(form, textvariable=self.sv[key], width=29, show=show or "", relief="flat", bg=C["sec"],
                      fg=C["text"], insertbackground=C["text"], highlightthickness=1,
                      highlightbackground=C["border"]).grid(row=r, column=1, sticky="w")
-        tk.Label(form, text="Drivers folder", bg=C["card"], fg=C["text"], width=20, anchor="w").grid(row=5, column=0, pady=4)
+        one = len(langs) == 1
+        for r, (lab, var, values, state, note) in enumerate((
+                ("Language", self.lang_v, list(self._lang_map), "disabled" if one else "readonly",
+                 "Only one in this image" if one else ""),
+                ("Region & format", self.loc_v, list(self._loc_map), "readonly", "Dates & keyboard"),
+                ("Time zone", self.tz_v, data.TIMEZONES, "readonly", "")), 3):
+            left = tk.Frame(form, bg=C["card"])
+            left.grid(row=r, column=0, pady=4, sticky="w")
+            tk.Label(left, text=lab, bg=C["card"], fg=C["text"], width=20, anchor="w").pack(anchor="w")
+            if note:
+                tk.Label(left, text=note, bg=C["card"], fg=C["muted"], font=self.f_small,
+                         anchor="w").pack(anchor="w")
+            ttk.Combobox(form, textvariable=var, values=values, state=state, width=30, height=14
+                         ).grid(row=r, column=1, sticky="w")
+        tk.Label(form, text="Drivers folder", bg=C["card"], fg=C["text"], width=20, anchor="w").grid(row=6, column=0, pady=4)
         drow = tk.Frame(form, bg=C["card"])
-        drow.grid(row=5, column=1, sticky="w")
+        drow.grid(row=6, column=1, sticky="w")
         Btn(drow, "Choose…", self._pick_drivers, "secondary").pack(side="left")
         self.drv_lbl = tk.Label(drow, text=self.s["drivers"] or "None (optional)", bg=C["card"],
                                 fg=C["muted"], anchor="w", font=self.f_small)
@@ -495,8 +548,12 @@ class Wizard(tk.Tk):
         self.s["oobe"] = self.oobe_v.get()
         if self.s["oobe"]:
             vals = {k: v.get().strip() if k != "pw" else v.get() for k, v in self.sv.items()}
+            vals["lang"] = self._lang_map.get(self.lang_v.get(), self.s["lang"])
+            vals["locale"] = self._loc_map.get(self.loc_v.get(), self.s["locale"])
+            vals["tz"] = self.tz_v.get()
             try:
-                w.build_unattend(vals["user"], vals["pw"], vals["host"], vals["locale"], vals["tz"])
+                w.build_unattend(vals["user"], vals["pw"], vals["host"], vals["locale"], vals["tz"],
+                                 language=vals["lang"])
             except w.Fail as e:
                 self.setup_err.configure(text=str(e))
                 return
@@ -616,6 +673,8 @@ class Wizard(tk.Tk):
             a += ["--iso", s["iso"]]
         if s["uefi"]:
             a += ["--uefi-zip", s["uefi"]]
+        if isinstance(s["iso_info"], dict):
+            a += ["--image-index", str(s["iso_info"]["image"]["index"])]
         if s["dry"]:
             a.append("--dry-run")
         if s["create"]:
@@ -623,7 +682,7 @@ class Wizard(tk.Tk):
         if not s["create"]:
             if s["oobe"]:
                 a += ["--user", s["user"], "--password", s["pw"], "--hostname", s["host"],
-                      "--locale", s["locale"], "--timezone", s["tz"]]
+                      "--language", s["lang"], "--locale", s["locale"], "--timezone", s["tz"]]
             else:
                 a.append("--no-unattend")
             if s["drivers"]:
@@ -678,6 +737,16 @@ class Wizard(tk.Tk):
                     msg, box = p
                     box["answer"] = PromptDialog(self, msg).result
                     box["event"].set()
+                elif kind == "iso":
+                    path, res = p
+                    if path == self.s["iso"]:
+                        self.s["iso_info"] = res
+                        if isinstance(res, dict):
+                            lang = res["default_lang"]
+                            self.s["lang"] = lang
+                            self.s["locale"] = lang if lang in data.LOCALES else "en-US"
+                        if self.page == 2:
+                            self.show(2)
                 elif kind == "probed":
                     self.s["info"] = p
                     if self.page == 1:

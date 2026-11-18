@@ -35,6 +35,9 @@ from xml.sax.saxutils import escape as xesc
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:            # also works under `python -I`
+    sys.path.insert(0, str(HERE))
+from woa_data import TIMEZONES as WIN_TIMEZONES  # noqa: E402
 CACHE = Path.home() / ".woa-installer"
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -176,22 +179,24 @@ class Tools:
         self.adb, self.fastboot = str(d / ("adb" + EXE)), str(d / ("fastboot" + EXE))
 
     def _find_wimlib(self):
-        w = shutil.which("wimlib-imagex")
-        if w:
-            self.wimlib = w
-            return
-        if IS_WIN:
-            d = CACHE / "wimlib"
-            exe = d / "wimlib-imagex.exe"
-            if not exe.exists():
-                z = CACHE / "wimlib.zip"
-                download(WIMLIB_WIN_URL, z, "wimlib")
-                with zipfile.ZipFile(z) as zf:
-                    zf.extractall(d)
-                z.unlink()
-            self.wimlib = str(exe)
-            return
-        raise Fail("wimlib-imagex not found. Install it first:  brew install wimlib")
+        self.wimlib = locate_wimlib()
+
+
+def locate_wimlib():
+    w = shutil.which("wimlib-imagex")
+    if w:
+        return w
+    if IS_WIN:
+        d = CACHE / "wimlib"
+        exe = d / "wimlib-imagex.exe"
+        if not exe.exists():
+            z = CACHE / "wimlib.zip"
+            download(WIMLIB_WIN_URL, z, "wimlib")
+            with zipfile.ZipFile(z) as zf:
+                zf.extractall(d)
+            z.unlink()
+        return str(exe)
+    raise Fail("wimlib-imagex not found. Install it first:  brew install wimlib")
 
 
 def run(cmd, check=True, capture=True, **kw):
@@ -558,7 +563,8 @@ def list_images(tools, wim):
             continue
         g = lambda k: (re.search(r"^%s:\s+(.*)$" % k, block, re.M) or [None, ""])[1].strip()
         images.append({"index": int(m.group(1)), "name": g("Name"),
-                       "arch": g("Architecture"), "build": g("Build")})
+                       "arch": g("Architecture"), "build": g("Build"),
+                       "langs": g("Languages").split(), "default_lang": g("Default Language")})
     return images
 
 
@@ -579,6 +585,18 @@ def pick_image(images, wanted):
                 and "workstation" not in i["name"].lower():
             return i
     return arm[0]
+
+
+def read_iso_info(iso, index=None):
+    """Mount the ISO, read its editions/languages, unmount. For the GUI's Files step."""
+    import types
+    tools = types.SimpleNamespace(wimlib=locate_wimlib())
+    with MountedIso(iso) as mp:
+        images = list_images(tools, find_wim(mp))
+        img = pick_image(images, index)
+    langs = img["langs"] or ([img["default_lang"]] if img["default_lang"] else [])
+    return {"images": images, "image": img, "langs": langs,
+            "default_lang": img["default_lang"] or (langs[0] if langs else "en-US")}
 
 
 # --------------------------------------------------------------------------- #
@@ -806,7 +824,7 @@ SPECIALIZE_CMDS = [
 
 
 def build_unattend(user="user", password="", hostname="WOA-DEVICE", locale="en-US",
-                   timezone="UTC", drivers=False):
+                   timezone="UTC", drivers=False, language=None):
     """unattend.xml for arm64 Windows 11: local admin account, autologon, no OOBE screens."""
     if not user or len(user) > 20 or BAD_USER & set(user) or user.endswith("."):
         raise Fail("Invalid account name %r (max 20 chars, none of %s)." % (user, "".join(sorted(BAD_USER))))
@@ -814,6 +832,11 @@ def build_unattend(user="user", password="", hostname="WOA-DEVICE", locale="en-U
         raise Fail("Invalid device name %r (1-15 letters, digits or '-')." % hostname)
     if not re.fullmatch(r"[A-Za-z]{2,3}-[A-Za-z0-9-]{2,}", locale or ""):
         raise Fail("Invalid language %r (use e.g. en-US)." % locale)
+    language = language or locale
+    if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})+", language):
+        raise Fail("Invalid display language %r (use e.g. en-US)." % language)
+    if timezone not in WIN_TIMEZONES:
+        raise Fail("Unknown time zone %r (use a Windows time zone name, e.g. UTC)." % timezone)
     u, pw = xesc(user), xesc(password)
     arch = 'processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"'
     cmds = "".join(
@@ -835,7 +858,7 @@ def build_unattend(user="user", password="", hostname="WOA-DEVICE", locale="en-U
         '<settings pass="oobeSystem">'
         '<component name="Microsoft-Windows-International-Core" %(a)s>'
         '<InputLocale>%(loc)s</InputLocale><SystemLocale>%(loc)s</SystemLocale>'
-        '<UILanguage>%(loc)s</UILanguage><UserLocale>%(loc)s</UserLocale></component>'
+        '<UILanguage>%(lang)s</UILanguage><UserLocale>%(loc)s</UserLocale></component>'
         '<component name="Microsoft-Windows-Shell-Setup" %(a)s>'
         '<OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>'
         '<HideOnlineAccountScreens>true</HideOnlineAccountScreens>'
@@ -850,7 +873,7 @@ def build_unattend(user="user", password="", hostname="WOA-DEVICE", locale="en-U
         '<Password><Value>%(pw)s</Value><PlainText>true</PlainText></Password></AutoLogon>'
         '<TimeZone>%(tz)s</TimeZone>%(first)s'
         '</component></settings>\n</unattend>\n'
-    ) % dict(a=arch, cmds=cmds, host=xesc(hostname), loc=xesc(locale), u=u, pw=pw,
+    ) % dict(a=arch, cmds=cmds, host=xesc(hostname), loc=xesc(locale), lang=xesc(language), u=u, pw=pw,
              tz=xesc(timezone), first=first)
 
 
@@ -959,7 +982,8 @@ def build_parser():
     ap.add_argument("--user", default="user", help="local administrator account (default: user)")
     ap.add_argument("--password", default="", help="its password (default: blank)")
     ap.add_argument("--hostname", default="WOA-DEVICE", help="Windows device name")
-    ap.add_argument("--locale", default="en-US", help="language/region, e.g. en-US")
+    ap.add_argument("--locale", default="en-US", help="region & format (and keyboard), e.g. en-GB")
+    ap.add_argument("--language", help="Windows display language, must exist in the image (default: same as --locale)")
     ap.add_argument("--timezone", default="UTC", help='Windows time zone name, e.g. "Pacific Standard Time"')
     ap.add_argument("--drivers", help="folder of .inf drivers to copy to C:\\Drivers and install at first logon")
     ap.add_argument("--skip-windows", action="store_true", help="only install the UEFI (skip Windows)")
@@ -1069,7 +1093,7 @@ def main(argv=None):
             bcd = resolve_bcd(ph, ARGS.bcd, parts["ESP"][0], esp_mp)
             if not ARGS.no_unattend:
                 xml = build_unattend(ARGS.user, ARGS.password, ARGS.hostname, ARGS.locale,
-                                     ARGS.timezone, bool(ARGS.drivers))
+                                     ARGS.timezone, bool(ARGS.drivers), ARGS.language)
                 write_unattend(tree, xml)
                 say("  unattended first boot: account '%s', no network/privacy screens, autologon"
                     % ARGS.user)
