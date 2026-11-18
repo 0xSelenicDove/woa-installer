@@ -85,10 +85,17 @@ def run_stream(cmd):
     """Run a long command, echoing its output line by line (works under the GUI too)."""
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     last = 0.0
-    for raw in iter(lambda: p.stdout.readline(), b""):
-        if time.time() - last > 1:
+    buf = b""
+    while True:
+        chunk = p.stdout.read1(4096) if hasattr(p.stdout, "read1") else p.stdout.read(4096)
+        if not chunk:
+            break
+        buf = (buf + chunk)[-4096:]
+        if time.time() - last > 2:
             last = time.time()
-            say("    " + raw.decode(errors="replace").strip())
+            line = re.split(rb"[\r\n]", buf.strip())[-1].decode(errors="replace").strip()
+            if line:
+                say("    " + line)
     if p.wait() != 0:
         raise Fail("command failed: " + " ".join(map(str, cmd)))
 
@@ -762,8 +769,9 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
     if tpl.is_file():
         return tpl
     say("  no BCD template; trying to reuse the BCD already on the phone's ESP")
-    try:
-        mount_vfat(ph, esp_dev, esp_mp)
+    try:                # read-only, so it also runs during --dry-run
+        ph.adb("shell", "su -c 'mkdir -p %s && umount %s 2>/dev/null; mount -t vfat -o ro %s %s'"
+               % (esp_mp, esp_mp, esp_dev, esp_mp), check=False)
     except Fail:
         pass            # fresh / unformatted ESP: nothing to reuse
     old = esp_mp + "/EFI/Microsoft/Boot/BCD"
@@ -953,11 +961,17 @@ def main(argv=None):
                     (parts["ESP"][0], parts["Windows"][0]))
                 if not ARGS.dry_run and PROMPT("  Type ERASE to continue: ").strip() != "ERASE":
                     raise Fail("aborted")
-                say("  extracting the image (this takes a while) ...")
                 tree = tmp / "win"
                 tree.mkdir()
-                run_stream([tools.wimlib, "apply", str(wim), str(img["index"]), str(tree),
-                            "--no-acls"])
+                if ARGS.dry_run:
+                    say("  [dry-run] extracting only Windows/Boot to test the ESP layout ...")
+                    (tree / "Windows").mkdir()
+                    run_stream([tools.wimlib, "extract", str(wim), str(img["index"]),
+                                "/Windows/Boot", "--dest-dir", str(tree / "Windows"), "--no-acls"])
+                else:
+                    say("  extracting the image (this takes a while) ...")
+                    run_stream([tools.wimlib, "apply", str(wim), str(img["index"]), str(tree),
+                                "--no-acls"])
 
             step("5/6", "Writing Windows to the phone")
             esp_mp, win_mp = WORK + "/esp", WORK + "/win"
@@ -981,7 +995,7 @@ def main(argv=None):
                         raise Fail("verification failed: %s missing on the phone" % where)
             ph.su("sync", mutating=True)
             ph.su("umount %s; umount %s" % (esp_mp, win_mp), check=False, mutating=True)
-            say("  Windows files written and verified.")
+            say("  [dry-run] nothing written." if ph.dry else "  Windows files written and verified.")
         else:
             step("4/6", "Skipping Windows (--skip-windows)")
             step("5/6", "Skipping Windows (--skip-windows)")
@@ -992,6 +1006,9 @@ def main(argv=None):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    if ARGS.dry_run:
+        say("\nDry run finished. Nothing on the phone was changed.")
+        return
     if ARGS.no_reboot:
         say("\nDone. Boot the UEFI slot with:  fastboot set_active %s && fastboot reboot"
             % (other_slot(ph.slot)[1:] or "<slot>"))
