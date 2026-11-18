@@ -232,9 +232,11 @@ class Phone:
         return self.sh("getprop " + name)
 
     def stream_in(self, cmd):
-        """Popen of `adb exec-in su -c cmd`; caller writes binary to .stdin."""
+        """Popen of `adb shell su -c cmd`; caller writes binary to .stdin."""
         assert "'" not in cmd
-        return subprocess.Popen([self.t.adb, "exec-in", "su -c '%s'" % cmd],
+        # NB: `adb exec-in` silently drops piped data on current platform-tools; a piped
+        # `adb shell` (shell protocol v2, no pty) is binary-safe and propagates exit codes.
+        return subprocess.Popen([self.t.adb, "shell", "su -c '%s'" % cmd],
                                 stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def find_byname(self):
