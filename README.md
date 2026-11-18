@@ -10,9 +10,8 @@ You supply a **Windows 11 ARM64 ISO** and, for your phone, a **UEFI installer zi
 
 * Unlocked bootloader, Magisk root (grant the `adb shell` user superuser), USB debugging on.
 * An **A/B** device (recommended): Android keeps running from the current slot and the UEFI goes in the other one. Non-A/B phones need `--allow-non-ab` and the UEFI replaces your only boot image.
-* ESP (FAT32) and Windows (NTFS, 20 GB+) partitions already exist. They are auto-detected by common by-name labels (`esp`, `win`, ...); otherwise pass `--esp-part` / `--win-part` (a label or `sdXN`). Creating or resizing partitions is **not** automated (it means shrinking `userdata`, which wipes the phone).
+* ESP and Windows partitions: auto-detected by label (`esp`, `win`, ...) or via `--esp-part` / `--win-part`. If they don't exist, run once with `--create-partitions` (see below).
 * ~25 GB free on the PC for the extracted image.
-* An NTFS-3G binary on the phone (`mount.ntfs` / `ntfs-3g`, e.g. a Magisk module). `mkntfs` is optional; without it the partition is cleared instead of reformatted.
 
 PC requirements: Python 3.8+. macOS also needs `brew install wimlib`; on Windows `wimlib`, `adb` and `fastboot` are downloaded automatically (into `~/.woa-installer`).
 
@@ -21,16 +20,28 @@ PC requirements: Python 3.8+. macOS also needs `brew install wimlib`; on Windows
 macOS: double-click `install-macos.command`, or
 
 ```bash
-python3 munch_installer.py --iso ~/Downloads/Win11_ARM64.iso
+python3 woa_installer.py --iso ~/Downloads/Win11_ARM64.iso
 ```
 
 Windows: double-click `install-windows.bat`, or
 
 ```bat
-py -3 munch_installer.py --iso C:\Users\me\Downloads\Win11_ARM64.iso
+py -3 woa_installer.py --iso C:\Users\me\Downloads\Win11_ARM64.iso
 ```
 
-Useful flags: `--uefi-zip PATH`, `--repo owner/name`, `--esp-part`, `--win-part`, `--allow-non-ab`, `--image-index N` (default: Pro), `--bcd PATH`, `--dry-run` (read-only rehearsal), `--skip-windows` (UEFI only), `--no-reboot`.
+Useful flags: `--uefi-zip PATH`, `--repo owner/name`, `--esp-part`, `--win-part`, `--allow-non-ab`, `--image-index N` (default: Pro), `--bcd PATH`, `--create-partitions`, `--esp-size`, `--win-size`, `--phone-tools`, `--dry-run` (read-only rehearsal), `--skip-windows` (UEFI only), `--no-reboot`.
+
+## Creating partitions
+
+`--create-partitions` (sizes: `--esp-size 512M`, `--win-size 64G`) edits the GPT of the disk holding `userdata`:
+
+* If there is enough free space after the last partition, it just adds `esp` and `win` there.
+* Otherwise it shrinks `userdata` (it must be the last partition). **That erases all phone data**, so you must type `WIPE DATA`. The installer then runs `fastboot erase userdata` + `erase metadata` and reboots; finish Android setup, re-enable USB debugging, make sure root works, and run the installer again.
+* The old GPT is saved to `~/.woa-installer/backup/`, both copies are rewritten with valid CRCs, and the result is re-read and verified before rebooting. Always try `--dry-run` first.
+
+## NTFS and FAT on the phone
+
+Android has no NTFS-3G, so the installer pushes static aarch64 `mkntfs`, `ntfs-3g` and `mkfs.fat` if the phone lacks them. They come from this repo's release asset `phone-tools-aarch64.tar.gz` (checksum-verified), built by `.github/workflows/phone-tools.yml` / `phone-tools/build.sh`, or from a folder via `--phone-tools DIR`. Both partitions are formatted fresh (NTFS quick-format with the device's sector size).
 
 ## BCD
 
@@ -45,4 +56,4 @@ The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`).
 
 ## Status
 
-Not yet run against a real phone. Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Use `--dry-run` first.
+Not yet run against a real phone, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/test_gpt.py` checks the GPT editor offline. Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Use `--dry-run` first.

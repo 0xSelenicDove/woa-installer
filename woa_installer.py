@@ -23,9 +23,12 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import struct
 import tempfile
 import time
 import urllib.request
+import uuid
+import zlib
 import zipfile
 from pathlib import Path
 
@@ -50,7 +53,12 @@ BYNAME_DIRS = ["/dev/block/bootdevice/by-name", "/dev/block/by-name",
                "/dev/block/platform/*/by-name", "/dev/block/platform/*/*/by-name"]
 ESP_NAMES = ("esp", "winesp", "win_esp", "efi", "uefi_esp")
 WIN_NAMES = ("win", "windows", "winos", "win_os", "winpe")
-WORK = "/data/local/tmp/munch-install"          # on the phone
+WORK = "/data/local/tmp/woa-install"            # on the phone
+TOOLS_REPO = "0xSelenicDove/woa-installer"      # releases carry phone-tools-aarch64.tar.gz
+TOOLS_ASSET = "phone-tools-aarch64.tar.gz"
+PHONE_TOOLS = ("mkntfs", "ntfs-3g", "mkfs.fat")  # static aarch64 binaries, see phone-tools/
+ESP_TYPE = uuid.UUID("C12A7328-F81F-11D2-BA4B-00A0C93EC93B")
+BASIC_TYPE = uuid.UUID("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7")
 
 
 class Fail(Exception):
@@ -255,17 +263,14 @@ def find_partitions(ph, esp, win):
     esp = esp or autodetect(ph, None, ESP_NAMES) or prof.get("esp")
     win = win or autodetect(ph, None, WIN_NAMES) or prof.get("win")
     if not esp or not win:
-        listing = ph.su("ls %s" % ph.bydir, check=False).replace("\n", " ")
-        raise Fail(
-            "Could not find the ESP / Windows partitions on this device.\n"
-            "Partitions seen: %s\n"
-            "Create them (README, 'Partitions') and pass --esp-part and --win-part\n"
-            "(a by-name label, or something like sda35)." % listing)
+        return None
     out = {}
     for label, name in (("ESP", esp), ("Windows", win)):
         dev = resolve_part(ph, name)
         sz = ph.su("blockdev --getsize64 " + dev, check=False)
         if not sz.isdigit():
+            if not (ARGS.esp_part or ARGS.win_part) and ARGS.create_partitions:
+                return None      # profile default (e.g. sda35) is not there yet
             raise Fail("Partition %s (%s) does not exist or is unreadable." % (dev, label))
         out[label] = (dev, int(sz))
         say("  %-8s %-34s %s" % (label, dev, human(int(sz))))
@@ -276,6 +281,180 @@ def find_partitions(ph, esp, win):
     if out["ESP"][0] == out["Windows"][0]:
         raise Fail("ESP and Windows partition are the same device.")
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Partition creation (GPT edited directly; no sgdisk needed on the phone)
+# --------------------------------------------------------------------------- #
+def parse_size(txt):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMGT]?)I?B?", txt.strip().upper())
+    if not m:
+        raise Fail("bad size %r (use e.g. 512M, 64G)" % txt)
+    return int(float(m.group(1)) * 1024 ** "_KMGT".index(m.group(2) or "_"))
+
+
+class Gpt:
+    HDR = "<8sIIIIQQQQ16sQIII"          # 92 bytes
+
+    def __init__(self, ph, disk):
+        self.ph, self.disk = ph, disk
+        self.ss = int(ph.su("cat /sys/block/%s/queue/logical_block_size" % disk))
+        self.total = int(ph.su("cat /sys/block/%s/size" % disk)) * 512 // self.ss
+        self.dev = "/dev/block/" + disk
+        self.p_sec = self.read(1, 1)
+        self.p = self.parse(self.p_sec)
+        self.ents = self.read_entries(self.p)
+        self.b_sec = self.read(self.p["alt"], 1)
+        self.b = self.parse(self.b_sec)
+        self.b_ents = self.read_entries(self.b)
+        if self.ents != self.b_ents:
+            raise Fail("Primary and backup GPT disagree; refusing to touch this disk.")
+
+    def read(self, lba, count):
+        return self.ph.adb("exec-out", "su -c 'dd if=%s bs=%d skip=%d count=%d 2>/dev/null'"
+                           % (self.dev, self.ss, lba, count)).stdout
+
+    def parse(self, sec):
+        f = struct.unpack(self.HDR, sec[:92])
+        if f[0] != b"EFI PART":
+            raise Fail("No GPT found on %s" % self.dev)
+        h = dict(size=f[2], crc=f[3], me=f[5], alt=f[6], first=f[7], last=f[8], guid=f[9],
+                 elba=f[10], n=f[11], esz=f[12], ecrc=f[13])
+        raw = bytearray(sec[:h["size"]])
+        raw[16:20] = b"\0\0\0\0"
+        if zlib.crc32(bytes(raw)) != h["crc"]:
+            raise Fail("GPT header CRC is bad on %s" % self.dev)
+        return h
+
+    def read_entries(self, h):
+        nsec = -(-h["n"] * h["esz"] // self.ss)
+        raw = self.read(h["elba"], nsec)[:h["n"] * h["esz"]]
+        if zlib.crc32(raw) != h["ecrc"]:
+            raise Fail("GPT entry array CRC is bad on %s" % self.dev)
+        return [raw[i * h["esz"]:(i + 1) * h["esz"]] for i in range(h["n"])]
+
+    @staticmethod
+    def decode(e):
+        return dict(type=e[:16], uid=e[16:32], first=struct.unpack("<Q", e[32:40])[0],
+                    last=struct.unpack("<Q", e[40:48])[0],
+                    name=e[56:128].decode("utf-16le", "ignore").rstrip("\0"))
+
+    def used(self):
+        return [(i, self.decode(e)) for i, e in enumerate(self.ents) if e[:16] != b"\0" * 16]
+
+    def build_entry(self, ptype, first, last, name):
+        nm = name.encode("utf-16le").ljust(72, b"\0")
+        e = ptype.bytes_le + uuid.uuid4().bytes_le + struct.pack("<QQQ", first, last, 0) + nm
+        return e.ljust(self.p["esz"], b"\0")
+
+    def header(self, h, sec, me, alt, elba, ents):
+        arr = b"".join(ents)
+        raw = bytearray(sec)
+        struct.pack_into(self.HDR, raw, 0, b"EFI PART", 0x10000, 92, 0, 0, me, alt, h["first"],
+                         h["last"], h["guid"], elba, h["n"], h["esz"], zlib.crc32(arr))
+        struct.pack_into("<I", raw, 16, zlib.crc32(bytes(raw[:92])))
+        return bytes(raw), arr
+
+    def write(self, lba, data):
+        proc = self.ph.stream_in("dd of=%s bs=%d seek=%d conv=notrunc 2>/dev/null"
+                                 % (self.dev, self.ss, lba))
+        proc.communicate(data)
+        if proc.returncode != 0:
+            raise Fail("writing GPT at LBA %d failed" % lba)
+
+    def commit(self, ents):
+        p_hdr, arr = self.header(self.p, self.p_sec, 1, self.p["alt"], self.p["elba"], ents)
+        b_hdr, _ = self.header(self.b, self.b_sec, self.b["me"], 1, self.b["elba"], ents)
+        # backup first, then primary, so a crash leaves a valid GPT either way
+        self.write(self.b["elba"], arr)
+        self.write(self.b["me"], b_hdr)
+        self.write(self.p["elba"], arr)
+        self.write(1, p_hdr)
+        self.ph.su("sync")
+
+
+def plan_layout(g, esp_bytes, win_bytes):
+    """Return (new_entries, notes, shrinks_userdata)."""
+    align = max(1, (1024 * 1024) // g.ss)
+    used = g.used()
+    names = {u["name"].lower(): (i, u) for i, u in used}
+    if "esp" in names or "win" in names:
+        raise Fail("A partition named esp/win already exists; use --esp-part/--win-part.")
+    last_part = max(used, key=lambda x: x[1]["last"])
+    esp_n = -(-esp_bytes // g.ss)
+    win_n = -(-win_bytes // g.ss)
+    end = (g.p["last"] + 1) // align * align - 1          # last aligned sector
+    win_first = (end + 1 - win_n) // align * align
+    esp_first = (win_first - esp_n) // align * align
+    ents = list(g.ents)
+    notes, shrink = [], False
+    if last_part[1]["last"] >= esp_first:
+        if last_part[1]["name"].lower() != "userdata":
+            raise Fail("No free space at the end of the disk and the last partition is '%s', "
+                       "not userdata. Partition manually." % last_part[1]["name"])
+        shrink = True
+        new_last = esp_first - 1
+        keep = (new_last - last_part[1]["first"] + 1) * g.ss
+        if keep < 16 * 1024 ** 3:
+            raise Fail("Not enough room: userdata would shrink to %s. Use smaller --win-size."
+                       % human(keep))
+        e = bytearray(ents[last_part[0]])
+        e[40:48] = struct.pack("<Q", new_last)
+        ents[last_part[0]] = bytes(e)
+        notes.append("shrink userdata to %s (DATA WILL BE ERASED)" % human(keep))
+    free = [i for i, e in enumerate(ents) if e[:16] == b"\0" * 16]
+    if len(free) < 2:
+        raise Fail("GPT has no free entry slots.")
+    ents[free[0]] = g.build_entry(ESP_TYPE, esp_first, win_first - 1, "esp")
+    ents[free[1]] = g.build_entry(BASIC_TYPE, win_first, win_first + win_n - 1, "win")
+    notes.append("add esp   %s  (LBA %d-%d)" % (human(esp_n * g.ss), esp_first, win_first - 1))
+    notes.append("add win   %s  (LBA %d-%d)" % (human(win_n * g.ss), win_first, win_first + win_n - 1))
+    return ents, notes, shrink
+
+
+def create_partitions(ph, tools):
+    ref = ph.su("readlink -f %s/userdata" % ph.bydir, check=False)
+    if not ref.startswith("/dev/block/"):
+        raise Fail("Could not locate the userdata partition; create esp/win manually.")
+    disk = ph.su("basename $(dirname $(readlink -f /sys/class/block/%s))" % ref.split("/")[-1])
+    say("  userdata lives on %s" % disk)
+    g = Gpt(ph, disk)
+    say("  sector size %d, disk %s, %d partitions" % (g.ss, human(g.total * g.ss), len(g.used())))
+    ents, notes, shrink = plan_layout(g, parse_size(ARGS.esp_size), parse_size(ARGS.win_size))
+    say("  plan:")
+    for n in notes:
+        say("    - " + n)
+    outdir = Path(ARGS.backup_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    bk = outdir / ("gpt_%s_%s.bin" % (ph.dev, time.strftime("%Y%m%d-%H%M%S")))
+    nsec = 2 + -(-g.p["n"] * g.p["esz"] // g.ss) + 1
+    bk.write_bytes(g.read(0, nsec))
+    say("  saved the current GPT to %s" % bk)
+    if ph.dry:
+        say("  [dry-run] not writing")
+        return False
+    need = "WIPE DATA" if shrink else "PARTITION"
+    if input("  Type %s to rewrite the partition table: " % need).strip() != need:
+        raise Fail("aborted")
+    g.commit(ents)
+    chk = Gpt(ph, disk)
+    if chk.ents != ents:
+        raise Fail("GPT verify failed after writing. Restore with the saved backup: " + str(bk))
+    say("  partition table written and verified.")
+    ph.adb("reboot", "bootloader", check=False)
+    for _ in range(40):
+        if b"fastboot" in run([tools.fastboot, "devices"], check=False).stdout:
+            break
+        time.sleep(2)
+    else:
+        raise Fail("Phone did not reach fastboot. Boot it to fastboot manually"
+                   + (", then run: fastboot erase userdata && fastboot erase metadata" if shrink else ""))
+    if shrink:
+        say("  erasing userdata + metadata (its filesystem no longer matches)")
+        run([tools.fastboot, "erase", "userdata"], check=False)
+        run([tools.fastboot, "erase", "metadata"], check=False)
+    run([tools.fastboot, "reboot"], check=False)
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -388,10 +567,10 @@ def get_uefi_zip(path, dev, repo):
 # --------------------------------------------------------------------------- #
 # Phone-side filesystem work
 # --------------------------------------------------------------------------- #
-def mount_ntfs(ph, dev, mp):
+def mount_ntfs(ph, dev, mp, tl=None):
     ph.su("mkdir -p " + mp, mutating=True)
-    for cmd in ("mount.ntfs -o rw,noatime %s %s" % (dev, mp),
-                "ntfs-3g -o rw,noatime %s %s" % (dev, mp),
+    drv = (tl or {}).get("ntfs-3g", "ntfs-3g")
+    for cmd in ("%s -o rw,noatime %s %s" % (drv, dev, mp),
                 "mount -t ntfs3 -o noatime %s %s" % (dev, mp)):
         if ph.dry:
             say("  [dry-run] su: " + cmd)
@@ -399,8 +578,7 @@ def mount_ntfs(ph, dev, mp):
         ph.su(cmd + " 2>&1", check=False)
         if ph.su("grep -c ' %s ' /proc/mounts" % mp, check=False).strip() not in ("", "0"):
             return
-    raise Fail("Could not mount NTFS read-write on the phone (tried mount.ntfs, ntfs-3g, ntfs3).\n"
-               "Install an NTFS-3G Magisk module and retry.")
+    raise Fail("Could not mount NTFS read-write on the phone (tried ntfs-3g and the kernel ntfs3).")
 
 
 def mount_vfat(ph, dev, mp):
@@ -408,17 +586,61 @@ def mount_vfat(ph, dev, mp):
     ph.su("mount -t vfat -o rw,noatime,umask=000 %s %s" % (dev, mp), mutating=True)
 
 
-def wipe(ph, dev, mp, label):
-    fmt = ph.su("which mkntfs mkfs.ntfs", check=False) if label == "Windows" else ""
-    if fmt:
-        say("  quick-formatting %s ..." % label)
-        ph.su("umount %s" % mp, check=False, mutating=True)
-        tool = fmt.splitlines()[0]
-        ph.su("%s -f -L Windows -s 4096 %s" % (tool, dev), mutating=True)
-        mount_ntfs(ph, dev, mp)
+def ensure_phone_tools(ph):
+    """Make mkntfs / ntfs-3g / mkfs.fat runnable on the phone; returns {name: path}."""
+    found, missing = {}, []
+    for t in PHONE_TOOLS:
+        alt = {"mkntfs": "mkntfs mkfs.ntfs", "ntfs-3g": "ntfs-3g mount.ntfs",
+               "mkfs.fat": "mkfs.fat mkfs.vfat newfs_msdos"}[t]
+        p = ph.su("which %s 2>/dev/null" % alt, check=False).splitlines()
+        if p:
+            found[t] = p[0]
+        else:
+            missing.append(t)
+    if not missing:
+        return found
+    say("  phone is missing: %s - pushing static builds" % ", ".join(missing))
+    src = Path(ARGS.phone_tools) if ARGS.phone_tools else None
+    if src is None:
+        d = CACHE / "phone-tools"
+        tgz = CACHE / TOOLS_ASSET
+        if not d.exists():
+            base = "https://github.com/%s/releases/latest/download/" % TOOLS_REPO
+            download(base + TOOLS_ASSET, tgz, "NTFS/FAT tools for the phone")
+            download(base + TOOLS_ASSET + ".sha256", CACHE / (TOOLS_ASSET + ".sha256"), "checksum")
+            want = (CACHE / (TOOLS_ASSET + ".sha256")).read_text().split()[0]
+            if hashlib.sha256(tgz.read_bytes()).hexdigest() != want:
+                tgz.unlink()
+                raise Fail("phone tools checksum mismatch")
+            d.mkdir(parents=True)
+            with tarfile.open(tgz) as tf:
+                tf.extractall(d)
+        src = d
+    if ph.dry:
+        say("  [dry-run] would push %s from %s" % (", ".join(missing), src))
+        return {t: WORK + "/bin/" + t for t in PHONE_TOOLS}
+    ph.su("mkdir -p %s/bin" % WORK)
+    for t in missing:
+        f = next((c for c in (src / t, src / "bin" / t) if c.is_file()), None)
+        if not f:
+            raise Fail("%s not found in %s (see phone-tools/)" % (t, src))
+        ph.adb("push", str(f), "%s/bin/%s" % (WORK, t))
+        ph.su("chmod 755 %s/bin/%s" % (WORK, t))
+        found[t] = "%s/bin/%s" % (WORK, t)
+    return found
+
+
+def format_partitions(ph, parts, tl):
+    sec = ph.su("blockdev --getss " + parts["ESP"][0], check=False) or "512"
+    say("  formatting ESP as FAT32")
+    fat = tl["mkfs.fat"]
+    if fat.endswith("newfs_msdos"):
+        ph.su("%s -F 32 -L ESP %s" % (fat, parts["ESP"][0]), mutating=True)
     else:
-        say("  clearing %s ..." % label)
-        ph.su("find %s -mindepth 1 -maxdepth 1 -exec rm -rf {} +" % mp, mutating=True)
+        ph.su("%s -F 32 -n ESP -S %s %s" % (fat, sec, parts["ESP"][0]), mutating=True)
+    say("  formatting Windows partition as NTFS (quick)")
+    ntfs = tl["mkntfs"]
+    ph.su("%s -f -F -L Windows %s" % (ntfs, parts["Windows"][0]), mutating=True)
 
 
 def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
@@ -500,13 +722,16 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
     if tpl.is_file():
         return tpl
     say("  no BCD template; trying to reuse the BCD already on the phone's ESP")
-    mount_vfat(ph, esp_dev, esp_mp)
+    try:
+        mount_vfat(ph, esp_dev, esp_mp)
+    except Fail:
+        pass            # fresh / unformatted ESP: nothing to reuse
     old = esp_mp + "/EFI/Microsoft/Boot/BCD"
     if ph.su("[ -f %s ] && echo y" % old, check=False) != "y":
         raise Fail(
             "No BCD available. Provide one with --bcd, drop it at assets/BCD, or install\n"
             "Windows once so the ESP already has EFI/Microsoft/Boot/BCD.")
-    out = Path(tempfile.mkdtemp(prefix="munch-bcd-")) / "BCD"
+    out = Path(tempfile.mkdtemp(prefix="woa-bcd-")) / "BCD"
     with open(out, "wb") as f:
         f.write(ph.adb("exec-out", "su -c 'cat %s'" % old).stdout)
     ph.su("umount " + esp_mp, check=False)
@@ -594,6 +819,11 @@ def main():
     ap.add_argument("--win-part", help="Windows partition: by-name label or sdXN (default: auto-detect)")
     ap.add_argument("--platform-tools", help="folder with adb/fastboot")
     ap.add_argument("--backup-dir", default=str(CACHE / "backup"))
+    ap.add_argument("--create-partitions", action="store_true",
+                    help="create esp/win partitions at the end of the disk if they are missing")
+    ap.add_argument("--esp-size", default="512M")
+    ap.add_argument("--win-size", default="64G")
+    ap.add_argument("--phone-tools", help="folder with static aarch64 mkntfs, ntfs-3g, mkfs.fat")
     ap.add_argument("--skip-windows", action="store_true", help="only install the UEFI (skip Windows)")
     ap.add_argument("--no-reboot", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="read-only: show what would be written")
@@ -618,13 +848,27 @@ def main():
     step("2/6", "UEFI package and partitions")
     uefi = get_uefi_zip(ARGS.uefi_zip, ph.dev, ARGS.repo)
     check_compat(uefi, names)
-    parts = find_partitions(ph, ARGS.esp_part, ARGS.win_part) if not ARGS.skip_windows else None
+    parts = None
+    if not ARGS.skip_windows:
+        parts = find_partitions(ph, ARGS.esp_part, ARGS.win_part)
+        if parts is None:
+            if not ARGS.create_partitions:
+                listing = ph.su("ls %s" % ph.bydir, check=False).replace("\n", " ")
+                raise Fail("No ESP / Windows partitions found (partitions: %s).\n"
+                           "Re-run with --create-partitions to create them, or pass\n"
+                           "--esp-part / --win-part." % listing)
+            step("2b/6", "Creating the ESP and Windows partitions")
+            if create_partitions(ph, tools):
+                say("\nThe phone is rebooting. If data was erased, finish Android setup, enable USB")
+                say("debugging, make sure root works (reinstall Magisk if needed), then run this")
+                say("installer again WITHOUT --create-partitions.")
+            return
 
     step("3/6", "Backing up the stock boot image")
     bk = backup_boot(ph, Path(ARGS.backup_dir))
     say("  saved %s (keep this!)" % bk)
 
-    tmp = Path(tempfile.mkdtemp(prefix="munch-install-"))
+    tmp = Path(tempfile.mkdtemp(prefix="woa-install-"))
     try:
         if not ARGS.skip_windows:
             step("4/6", "Reading the Windows ISO")
@@ -648,12 +892,12 @@ def main():
             esp_tree = tmp / "esp"
             esp_tree.mkdir()
             build_esp_tree(tree, bcd, esp_tree)
-            for dev, mp in ((parts["ESP"][0], esp_mp), (parts["Windows"][0], win_mp)):
+            for mp in (esp_mp, win_mp):
                 ph.su("umount %s" % mp, check=False, mutating=True)
+            tl = ensure_phone_tools(ph)
+            format_partitions(ph, parts, tl)
             mount_vfat(ph, parts["ESP"][0], esp_mp)
-            mount_ntfs(ph, parts["Windows"][0], win_mp)
-            wipe(ph, parts["ESP"][0], esp_mp, "ESP")
-            wipe(ph, parts["Windows"][0], win_mp, "Windows")
+            mount_ntfs(ph, parts["Windows"][0], win_mp, tl)
             stream_tree(ph, str(esp_tree), esp_mp, "ESP")
             stream_tree(ph, str(tree), win_mp, "Windows")
             if not ph.dry:
