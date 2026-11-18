@@ -26,6 +26,7 @@ import tarfile
 import struct
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import uuid
 import zlib
@@ -102,19 +103,45 @@ def human(n):
 # --------------------------------------------------------------------------- #
 # Host tools
 # --------------------------------------------------------------------------- #
+def fetch(url, dest=None):
+    """GET url -> bytes (or save to dest). Falls back to curl when Python lacks CA certs
+    (common with python.org builds on macOS)."""
+    import ssl
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "woa-installer"})
+        with urllib.request.urlopen(req) as r:
+            if dest:
+                with open(dest, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                return None
+            return r.read()
+    except (ssl.SSLError, urllib.error.URLError) as e:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(e) and not isinstance(e, ssl.SSLError):
+            raise Fail("download failed: %s (%s)" % (url, e))
+    curl = shutil.which("curl") or shutil.which("curl.exe")
+    if not curl:
+        raise Fail("Python cannot verify HTTPS certificates and curl is missing. On macOS run "
+                   "'Install Certificates.command' from your Python folder.")
+    cmd = [curl, "-fsSL", "-A", "woa-installer"] + (["-o", str(dest)] if dest else []) + [url]
+    r = run(cmd)
+    return None if dest else r.stdout
+
+
 def download(url, dest, what):
     say("  downloading %s ..." % what)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "woa-installer"})
-    with urllib.request.urlopen(req) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    fetch(url, dest)
 
 
 class Tools:
     def __init__(self, platform_tools=None):
         self.adb = self.fastboot = self.wimlib = None
+        self.wimlib_error = None
         self._find_platform_tools(platform_tools)
-        self._find_wimlib()
+        try:
+            self._find_wimlib()
+        except Fail as e:
+            self.wimlib_error = str(e)
 
     def _find_platform_tools(self, override):
         cands = []
@@ -557,9 +584,7 @@ def get_uefi_zip(path, dev, repo):
         if not repo:
             raise Fail("No UEFI zip for '%s'. Pass --uefi-zip PATH or --repo owner/name." % dev)
         say("  no --uefi-zip given; fetching the latest release of %s" % repo)
-        req = urllib.request.Request(RELEASES_API % repo, headers={"User-Agent": "woa-installer"})
-        with urllib.request.urlopen(req) as r:
-            rel = json.load(r)
+        rel = json.loads(fetch(RELEASES_API % repo))
         asset = next((a for a in rel.get("assets", [])
                       if re.match(r"uefi-installer.*\.zip$", a["name"])), None)
         if not asset:
@@ -819,8 +844,7 @@ def switch_to_uefi(ph, tools):
 
 
 # --------------------------------------------------------------------------- #
-def main(argv=None):
-    global ARGS
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--iso", help="Windows 11 ARM64 ISO (prompted if omitted)")
@@ -842,6 +866,38 @@ def main(argv=None):
     ap.add_argument("--skip-windows", action="store_true", help="only install the UEFI (skip Windows)")
     ap.add_argument("--no-reboot", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="read-only: show what would be written")
+    return ap
+
+
+def probe(argv=None):
+    """Read-only phone inspection for the GUI. Returns a dict of findings."""
+    global ARGS
+    ARGS = build_parser().parse_args(argv or [])
+    info = {"error": None, "device": "", "model": "", "root": False, "locked": None,
+            "slot": "", "ab": False, "esp": None, "win": None, "wimlib": None}
+    try:
+        tools = Tools(ARGS.platform_tools)
+        info["wimlib"] = tools.wimlib_error
+        ph = Phone(tools, True)
+        ph.wait_device()
+        info["device"] = ph.prop("ro.product.device")
+        info["model"] = ph.prop("ro.product.model")
+        info["root"] = "uid=0" in ph.su("id", check=False)
+        vb, fl = ph.prop("ro.boot.verifiedbootstate"), ph.prop("ro.boot.flash.locked")
+        info["locked"] = (vb == "green") or fl == "1"
+        info["slot"] = ph.prop("ro.boot.slot_suffix")
+        info["ab"] = bool(info["slot"])
+        if info["root"]:
+            ph.find_byname()
+            info["parts"] = find_partitions(ph, ARGS.esp_part, ARGS.win_part)
+    except Fail as e:
+        info["error"] = str(e)
+    return info
+
+
+def main(argv=None):
+    global ARGS
+    ap = build_parser()
     ARGS = ap.parse_args(argv)
 
     say("woa-installer - Windows on ARM + edk2-msm UEFI for rooted Android phones")
@@ -855,6 +911,8 @@ def main(argv=None):
         raise Fail("ISO not found: %s" % iso)
 
     tools = Tools(ARGS.platform_tools)
+    if not ARGS.skip_windows and tools.wimlib is None:
+        raise Fail(tools.wimlib_error)
     ph = Phone(tools, ARGS.dry_run)
 
     step("1/6", "Checking the phone")
