@@ -49,7 +49,7 @@ def is_dark():
 
 
 C = DARK if is_dark() else LIGHT
-STEPS = ["Welcome", "Device", "Files", "Storage", "Review", "Install", "Done"]
+STEPS = ["Welcome", "Device", "Files", "Storage", "Setup", "Review", "Install", "Done"]
 JOBS = ["Check the device", "Prepare UEFI & partitions", "Back up boot image",
         "Read Windows ISO", "Write Windows", "Install UEFI"]
 
@@ -125,7 +125,8 @@ class Wizard(tk.Tk):
         self.f_base = base
         self.q = queue.Queue()
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
-                      dry=True, nonab=False, noreboot=False, ack=False,
+                      dry=True, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
+                      host="WOA-DEVICE", locale="en-US", tz="UTC", drivers="",
                       job=-1, log="", result=None, rerun=False)
         self.page = 0
         self.logbox = None
@@ -192,7 +193,7 @@ class Wizard(tk.Tk):
         self.page = n
         self.clear()
         self._stepper()
-        [self.p_welcome, self.p_phone, self.p_files, self.p_storage, self.p_review,
+        [self.p_welcome, self.p_phone, self.p_files, self.p_storage, self.p_setup, self.p_review,
          self.p_install, self.p_done][n]()
 
     def title_(self, text, sub=None):
@@ -442,6 +443,66 @@ class Wizard(tk.Tk):
                           ack=self.ack.get())
         self.show(4)
 
+    def p_setup(self):
+        if self.s["create"]:            # partitions only this round; Windows setup comes next run
+            self.show(5)
+            return
+        self.title_("Windows setup", "Skip Windows' first-run screens so it starts straight at the desktop. "
+                    "No network, WiFi driver or Microsoft account needed.")
+        self.oobe_v = tk.BooleanVar(value=self.s["oobe"])
+        Check(self.body, "Skip the setup screens (recommended)", self.oobe_v, bg=C["bg"],
+              command=self._setup_toggle).pack(anchor="w")
+        self.setup_card = card(self.body)
+        form = tk.Frame(self.setup_card, bg=C["card"])
+        form.pack(fill="x", padx=20, pady=14)
+        self.sv = {k: tk.StringVar(value=self.s[k]) for k in ("user", "pw", "host", "locale", "tz")}
+        for r, (lab, key, show) in enumerate((("Account name", "user", None), ("Password (optional)", "pw", "•"),
+                                              ("Device name", "host", None), ("Language", "locale", None),
+                                              ("Time zone", "tz", None))):
+            tk.Label(form, text=lab, bg=C["card"], fg=C["text"], width=20, anchor="w").grid(row=r, column=0, pady=4)
+            tk.Entry(form, textvariable=self.sv[key], width=28, show=show or "", relief="flat", bg=C["sec"],
+                     fg=C["text"], insertbackground=C["text"], highlightthickness=1,
+                     highlightbackground=C["border"]).grid(row=r, column=1, sticky="w")
+        tk.Label(form, text="Drivers folder", bg=C["card"], fg=C["text"], width=20, anchor="w").grid(row=5, column=0, pady=4)
+        drow = tk.Frame(form, bg=C["card"])
+        drow.grid(row=5, column=1, sticky="w")
+        Btn(drow, "Choose…", self._pick_drivers, "secondary").pack(side="left")
+        self.drv_lbl = tk.Label(drow, text=self.s["drivers"] or "None (optional)", bg=C["card"],
+                                fg=C["muted"], anchor="w", font=self.f_small)
+        self.drv_lbl.pack(side="left", padx=10)
+        tk.Label(self.setup_card, text="The password is stored in plain text in the install files "
+                 "(Windows requires it). Use a throwaway one.", bg=C["card"], fg=C["muted"], font=self.f_small,
+                 anchor="w", wraplength=600, justify="left").pack(fill="x", padx=20, pady=(0, 12))
+        self.setup_err = tk.Label(self.body, text="", bg=C["bg"], fg=C["err"], anchor="w", wraplength=620,
+                                  justify="left")
+        self.nav(back=lambda: self.show(3), nxt=self._setup_next)
+        self.setup_err.pack(fill="x", pady=6, side="bottom")
+        self._setup_toggle()
+
+    def _setup_toggle(self):
+        if self.oobe_v.get():
+            self.setup_card.pack(fill="x", pady=14)
+        else:
+            self.setup_card.pack_forget()
+
+    def _pick_drivers(self):
+        d = filedialog.askdirectory(title="Folder with .inf drivers")
+        if d:
+            self.s["drivers"] = d
+            self.drv_lbl.configure(text=d)
+
+    def _setup_next(self):
+        self.s["oobe"] = self.oobe_v.get()
+        if self.s["oobe"]:
+            vals = {k: v.get().strip() if k != "pw" else v.get() for k, v in self.sv.items()}
+            try:
+                w.build_unattend(vals["user"], vals["pw"], vals["host"], vals["locale"], vals["tz"])
+            except w.Fail as e:
+                self.setup_err.configure(text=str(e))
+                return
+            self.s.update(vals)
+        self.show(5)
+
     def p_review(self):
         self.title_("Ready to go", "Here is what will happen.")
         i = self.s["info"]
@@ -453,7 +514,8 @@ class Wizard(tk.Tk):
                       "Restart the device, then you run this guide again to install Windows"]
         else:
             items += ["Format the ESP and Windows partitions",
-                      "Copy Windows from your ISO to the device",
+                      "Copy Windows from your ISO to the device"
+                      + (", set up to start straight at the desktop" if self.s["oobe"] else ""),
                       "Install the UEFI boot loader in the other slot",
                       "Restart the device into Windows"]
         tk.Frame(c, height=8, bg=C["card"]).pack()
@@ -475,7 +537,8 @@ class Wizard(tk.Tk):
         self.noreb = tk.BooleanVar(value=self.s["noreboot"])
         Check(self.body, "Don't restart the device when finished", self.noreb, bg=C["bg"]
               ).pack(anchor="w", pady=6)
-        self.nav(back=lambda: self.show(3), nxt=self._start, nxt_text="Start rehearsal")
+        self.nav(back=lambda: self.show(3 if self.s["create"] else 4), nxt=self._start,
+                 nxt_text="Start rehearsal")
         self._review_btn()
 
     def _review_btn(self):
@@ -557,6 +620,14 @@ class Wizard(tk.Tk):
             a.append("--dry-run")
         if s["create"]:
             a += ["--create-partitions", "--esp-size", s["esp"], "--win-size", s["win"]]
+        if not s["create"]:
+            if s["oobe"]:
+                a += ["--user", s["user"], "--password", s["pw"], "--hostname", s["host"],
+                      "--locale", s["locale"], "--timezone", s["tz"]]
+            else:
+                a.append("--no-unattend")
+            if s["drivers"]:
+                a += ["--drivers", s["drivers"]]
         if s["nonab"]:
             a.append("--allow-non-ab")
         if s["noreboot"]:
@@ -566,7 +637,7 @@ class Wizard(tk.Tk):
     def _start(self):
         self.s.update(dry=self.dry.get(), nonab=self.nonab.get(), noreboot=self.noreb.get(),
                       log="", result=None, rerun=False)
-        self.show(5)
+        self.show(6)
 
     def _prompt_from_thread(self, msg):
         box = {"event": threading.Event(), "answer": ""}
@@ -596,10 +667,10 @@ class Wizard(tk.Tk):
                     self._log(p)
                     for m in re.finditer(r"\[(\d)b?/6\]", p):
                         self.s["job"] = int(m.group(1)) - 1
-                        if self.page == 5:
+                        if self.page == 6:
                             self._set_job(self.s["job"])
                     lines = [x for x in p.replace("\r", "\n").split("\n") if x.strip()]
-                    if lines and self.page == 5:
+                    if lines and self.page == 6:
                         self.status.configure(text=lines[-1].strip()[:110])
                     if "installer again" in p:
                         self.s["rerun"] = True
@@ -613,7 +684,7 @@ class Wizard(tk.Tk):
                         self.show(1)
                 elif kind == "done":
                     self.s["result"] = p
-                    self.show(6)
+                    self.show(7)
         except queue.Empty:
             pass
         self.after(100, self._pump)
@@ -631,24 +702,25 @@ class Wizard(tk.Tk):
             self.title_("Rehearsal finished", "Nothing on the device was changed.")
             self.callout(self.body, "Everything checked out. When you're ready, run it for real.",
                          "ok").pack(fill="x")
-            self.nav(back=lambda: self.show(4), nxt=self._run_real, nxt_text="Install now")
+            self.nav(back=lambda: self.show(5), nxt=self._run_real, nxt_text="Install now")
         elif kind == "ok":
             self.title_("All done", "Windows is installed.")
             self.callout(self.body, "The device is restarting into Windows. The first boot runs Windows "
-                         "setup and can take several minutes. To return to Android, open the Boot "
-                         "Manager and pick “Reboot to other slot”.", "ok").pack(fill="x")
+                         "setup and can take several minutes"
+                         + (" and then signs in as “%s” automatically" % self.s["user"] if self.s["oobe"] else "")
+                         + ". To return to Android, open the Boot Manager and pick “Reboot to other slot”.", "ok").pack(fill="x")
             self.nav(nxt=self.destroy, nxt_text="Close")
         else:
             self.title_("Something went wrong", "Nothing further was changed after this point.")
             self.callout(self.body, msg or "Unknown error.", "err").pack(fill="x")
             tk.Label(self.body, text="Your boot image backup is in ~/.woa-installer/backup.",
                      bg=C["bg"], fg=C["muted"], anchor="w").pack(fill="x", pady=10)
-            self.nav(back=lambda: self.show(4), nxt=self.destroy, nxt_text="Close")
+            self.nav(back=lambda: self.show(5), nxt=self.destroy, nxt_text="Close")
         self._details()
 
     def _run_real(self):
         self.s.update(dry=False, log="", result=None, rerun=False)
-        self.show(5)
+        self.show(6)
 
 
 class LogWriter:

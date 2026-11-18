@@ -31,6 +31,7 @@ import urllib.request
 import uuid
 import zlib
 import zipfile
+from xml.sax.saxutils import escape as xesc
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -789,6 +790,86 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
 
 
 # --------------------------------------------------------------------------- #
+# Unattended first boot (skip OOBE: network, privacy, account screens)
+# --------------------------------------------------------------------------- #
+BAD_USER = set('"/\\[]:;|=,+*?<>@')
+SPECIALIZE_CMDS = [
+    # let OOBE continue without a network (no WiFi driver yet)
+    r'reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f',
+    # no privacy-settings screens / first-logon animation / consumer extras
+    r'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\OOBE" /v DisablePrivacyExperience /t REG_DWORD /d 1 /f',
+    r'reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableFirstLogonAnimation /t REG_DWORD /d 0 /f',
+    r'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableWindowsConsumerFeatures /t REG_DWORD /d 1 /f',
+    # do not auto-encrypt the system drive on first boot
+    r'reg add "HKLM\SYSTEM\CurrentControlSet\Control\BitLocker" /v PreventDeviceEncryption /t REG_DWORD /d 1 /f',
+]
+
+
+def build_unattend(user="user", password="", hostname="WOA-DEVICE", locale="en-US",
+                   timezone="UTC", drivers=False):
+    """unattend.xml for arm64 Windows 11: local admin account, autologon, no OOBE screens."""
+    if not user or len(user) > 20 or BAD_USER & set(user) or user.endswith("."):
+        raise Fail("Invalid account name %r (max 20 chars, none of %s)." % (user, "".join(sorted(BAD_USER))))
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,15}", hostname or "") or hostname.isdigit():
+        raise Fail("Invalid device name %r (1-15 letters, digits or '-')." % hostname)
+    if not re.fullmatch(r"[A-Za-z]{2,3}-[A-Za-z0-9-]{2,}", locale or ""):
+        raise Fail("Invalid language %r (use e.g. en-US)." % locale)
+    u, pw = xesc(user), xesc(password)
+    arch = 'processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"'
+    cmds = "".join(
+        '<RunSynchronousCommand wcm:action="add"><Order>%d</Order><Path>%s</Path></RunSynchronousCommand>'
+        % (i, xesc(c)) for i, c in enumerate(SPECIALIZE_CMDS, 1))
+    first = ""
+    if drivers:
+        first = ('<FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order>'
+                 '<CommandLine>pnputil /add-driver C:\\Drivers\\*.inf /subdirs /install</CommandLine>'
+                 '<Description>Install bundled drivers</Description></SynchronousCommand></FirstLogonCommands>')
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<unattend xmlns="urn:schemas-microsoft-com:unattend" '
+        'xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">\n'
+        '<settings pass="specialize">'
+        '<component name="Microsoft-Windows-Deployment" %(a)s><RunSynchronous>%(cmds)s</RunSynchronous></component>'
+        '<component name="Microsoft-Windows-Shell-Setup" %(a)s><ComputerName>%(host)s</ComputerName></component>'
+        '</settings>\n'
+        '<settings pass="oobeSystem">'
+        '<component name="Microsoft-Windows-International-Core" %(a)s>'
+        '<InputLocale>%(loc)s</InputLocale><SystemLocale>%(loc)s</SystemLocale>'
+        '<UILanguage>%(loc)s</UILanguage><UserLocale>%(loc)s</UserLocale></component>'
+        '<component name="Microsoft-Windows-Shell-Setup" %(a)s>'
+        '<OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>'
+        '<HideOnlineAccountScreens>true</HideOnlineAccountScreens>'
+        '<HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>'
+        '<HideLocalAccountScreen>true</HideLocalAccountScreen>'
+        '<ProtectYourPC>3</ProtectYourPC><NetworkLocation>Home</NetworkLocation>'
+        '<SkipMachineOOBE>true</SkipMachineOOBE><SkipUserOOBE>true</SkipUserOOBE></OOBE>'
+        '<UserAccounts><LocalAccounts><LocalAccount wcm:action="add"><Name>%(u)s</Name>'
+        '<Group>Administrators</Group><Password><Value>%(pw)s</Value><PlainText>true</PlainText></Password>'
+        '</LocalAccount></LocalAccounts></UserAccounts>'
+        '<AutoLogon><Enabled>true</Enabled><LogonCount>999999</LogonCount><Username>%(u)s</Username>'
+        '<Password><Value>%(pw)s</Value><PlainText>true</PlainText></Password></AutoLogon>'
+        '<TimeZone>%(tz)s</TimeZone>%(first)s'
+        '</component></settings>\n</unattend>\n'
+    ) % dict(a=arch, cmds=cmds, host=xesc(hostname), loc=xesc(locale), u=u, pw=pw,
+             tz=xesc(timezone), first=first)
+
+
+def write_unattend(tree, xml):
+    for rel in ("Windows/Panther/unattend.xml", "Windows/Panther/Unattend/Unattend.xml"):
+        f = Path(tree) / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(xml, encoding="utf-8")
+
+
+def copy_drivers(tree, src):
+    src = Path(src)
+    if not src.is_dir() or not list(src.rglob("*.inf")):
+        raise Fail("--drivers must be a folder containing .inf driver packages: %s" % src)
+    shutil.copytree(src, Path(tree) / "Drivers", dirs_exist_ok=True)
+    return len(list(src.rglob("*.inf")))
+
+
+# --------------------------------------------------------------------------- #
 # Backup / UEFI install / switch
 # --------------------------------------------------------------------------- #
 def other_slot(slot):
@@ -873,6 +954,14 @@ def build_parser():
     ap.add_argument("--esp-size", default="512M")
     ap.add_argument("--win-size", default="64G")
     ap.add_argument("--phone-tools", help="folder with static aarch64 mkntfs, ntfs-3g, mkfs.fat")
+    ap.add_argument("--no-unattend", action="store_true",
+                    help="don't inject unattend.xml (first boot shows the normal Windows setup)")
+    ap.add_argument("--user", default="user", help="local administrator account (default: user)")
+    ap.add_argument("--password", default="", help="its password (default: blank)")
+    ap.add_argument("--hostname", default="WOA-DEVICE", help="Windows device name")
+    ap.add_argument("--locale", default="en-US", help="language/region, e.g. en-US")
+    ap.add_argument("--timezone", default="UTC", help='Windows time zone name, e.g. "Pacific Standard Time"')
+    ap.add_argument("--drivers", help="folder of .inf drivers to copy to C:\\Drivers and install at first logon")
     ap.add_argument("--skip-windows", action="store_true", help="only install the UEFI (skip Windows)")
     ap.add_argument("--no-reboot", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="read-only: show what would be written")
@@ -978,6 +1067,14 @@ def main(argv=None):
             step("5/6", "Writing Windows to the device")
             esp_mp, win_mp = WORK + "/esp", WORK + "/win"
             bcd = resolve_bcd(ph, ARGS.bcd, parts["ESP"][0], esp_mp)
+            if not ARGS.no_unattend:
+                xml = build_unattend(ARGS.user, ARGS.password, ARGS.hostname, ARGS.locale,
+                                     ARGS.timezone, bool(ARGS.drivers))
+                write_unattend(tree, xml)
+                say("  unattended first boot: account '%s', no network/privacy screens, autologon"
+                    % ARGS.user)
+            if ARGS.drivers:
+                say("  bundling %d driver package(s) from %s" % (copy_drivers(tree, ARGS.drivers), ARGS.drivers))
             esp_tree = tmp / "esp"
             esp_tree.mkdir()
             build_esp_tree(tree, bcd, esp_tree)
