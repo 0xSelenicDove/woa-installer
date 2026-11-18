@@ -8,8 +8,7 @@ export CC=aarch64-linux-gnu-gcc
 OUT="$PWD/dist/stage"
 rm -rf dist build; mkdir -p "$OUT" build; cd build
 
-curl -fsSLO "https://download.tuxfamily.org/ntfs-3g/ntfs-3g_ntfsprogs-$NTFS_VER.tgz" 2>/dev/null || \
-  curl -fsSLO "https://tuxera.com/opensource/ntfs-3g_ntfsprogs-$NTFS_VER.tgz"
+curl -fsSL -A "Mozilla/5.0" -O "https://tuxera.com/opensource/ntfs-3g_ntfsprogs-$NTFS_VER.tgz"
 tar xf "ntfs-3g_ntfsprogs-$NTFS_VER.tgz"
 (cd "ntfs-3g_ntfsprogs-$NTFS_VER" &&
   ./configure --host=aarch64-linux-gnu --disable-shared --enable-static \
