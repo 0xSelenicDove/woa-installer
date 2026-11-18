@@ -178,8 +178,10 @@ class Wizard(tk.Tk):
                 c.destroy()
 
     def nav(self, back=None, nxt=None, nxt_text="Continue", nxt_ok=True):
+        self.back_btn = None
         if back:
-            Btn(self.foot, "Back", back, "secondary").pack(side="left")
+            self.back_btn = Btn(self.foot, "Back", back, "secondary")
+            self.back_btn.pack(side="left")
         self.next_btn = None
         if nxt:
             self.next_btn = Btn(self.foot, nxt_text, nxt, "primary")
@@ -255,13 +257,23 @@ class Wizard(tk.Tk):
                      "wait": ("…", C["muted"])}[state]
         f = tk.Frame(parent, bg=C["card"])
         f.pack(fill="x", padx=20, pady=5)
-        tk.Label(f, text=icon, bg=C["card"], fg=col, width=2, font=self.f_h).pack(side="left")
+        ic = tk.Label(f, text=icon, bg=C["card"], fg=col, width=2, font=self.f_h)
+        ic.pack(side="left")
         t = tk.Frame(f, bg=C["card"])
         t.pack(side="left", fill="x")
         tk.Label(t, text=title, bg=C["card"], fg=C["text"], anchor="w").pack(fill="x")
         if detail:
             tk.Label(t, text=detail, bg=C["card"], fg=C["muted"], font=self.f_small, anchor="w",
                      justify="left", wraplength=560).pack(fill="x")
+        return ic
+
+    SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def _spin(self, label, n=0):
+        if self.s["info"] != "busy" or not label.winfo_exists():
+            return
+        label.configure(text=self.SPIN[n % len(self.SPIN)], fg=C["accent"])
+        self.after(80, self._spin, label, n + 1)
 
     def _render_probe(self):
         for c in self.res.winfo_children():
@@ -271,7 +283,8 @@ class Wizard(tk.Tk):
         if i is None:
             self.row(self.res, "wait", "Not checked yet", "Press “Check phone”.")
         elif i == "busy":
-            self.row(self.res, "wait", "Checking…", "The first run downloads adb (about 10 MB).")
+            ic = self.row(self.res, "wait", "Checking…", "The first run downloads adb (about 10 MB).")
+            self._spin(ic)
         elif i["error"] and not i["device"]:
             self.row(self.res, "bad", "No phone found", i["error"])
         else:
@@ -298,6 +311,7 @@ class Wizard(tk.Tk):
         self._render_probe()
         self.chk_btn.set_enabled(False)
         self.next_btn.set_enabled(False)
+        self.back_btn.set_enabled(False)
         threading.Thread(target=lambda: self.q.put(("probed", w.probe())), daemon=True).start()
 
     def p_files(self):
