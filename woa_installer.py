@@ -82,7 +82,7 @@ def ask_yes(prompt):
 
 def run_stream(cmd):
     """Run a long command, echoing its output line by line (works under the GUI too)."""
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     last = 0.0
     buf = b""
     while True:
@@ -197,6 +197,7 @@ def locate_wimlib():
 
 
 def run(cmd, check=True, capture=True, **kw):
+    kw.setdefault("stdin", subprocess.DEVNULL)      # `adb shell` would otherwise swallow our own stdin
     r = subprocess.run(cmd, stdout=subprocess.PIPE if capture else None,
                        stderr=subprocess.PIPE if capture else None, **kw)
     if check and r.returncode != 0:
