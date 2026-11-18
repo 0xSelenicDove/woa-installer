@@ -603,23 +603,48 @@ def read_iso_info(iso, index=None):
 # --------------------------------------------------------------------------- #
 # UEFI package
 # --------------------------------------------------------------------------- #
+_REPO_RE = re.compile(r"^(?:git@github\.com:|(?:https?://)?(?:www\.)?github\.com/)?"
+                      r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/?#].*)?$")
+
+
+def parse_repo(text):
+    """'owner/name' or any github.com link to it -> 'owner/name'."""
+    m = _REPO_RE.match((text or "").strip())
+    if not m or {m.group(1), m.group(2)} & {".", ".."}:
+        raise Fail("Not a GitHub repository: %r. Use owner/name or a github.com link." % text)
+    return "%s/%s" % (m.group(1), m.group(2))
+
+
+def find_uefi_release(repo):
+    """Latest release of `repo` -> (tag, asset dict); raises Fail if unusable."""
+    repo = parse_repo(repo)
+    try:
+        rel = json.loads(fetch(RELEASES_API % repo))
+    except (Fail, ValueError):
+        raise Fail("Could not read the releases of %s (repository not found, private, or "
+                   "it has no releases)." % repo)
+    asset = next((a for a in rel.get("assets", [])
+                  if re.match(r"uefi-installer.*\.zip$", a["name"])), None)
+    if not asset:
+        raise Fail("The latest release of %s (%s) has no uefi-installer*.zip file."
+                   % (repo, rel.get("tag_name", "?")))
+    return rel.get("tag_name", "?"), asset
+
+
 def get_uefi_zip(path, dev, repo):
     if path:
         z = Path(path)
         if not z.is_file():
             raise Fail("UEFI zip not found: %s" % z)
     else:
-        repo = repo or PROFILES.get(dev, {}).get("repo")
+        repo = parse_repo(repo) if repo else PROFILES.get(dev, {}).get("repo")
         if not repo:
-            raise Fail("No UEFI zip for '%s'. Pass --uefi-zip PATH or --repo owner/name." % dev)
+            raise Fail("No UEFI zip for '%s'. Pass --uefi-zip PATH or --repo owner/name "
+                       "(or a github.com link)." % dev)
         say("  no --uefi-zip given; fetching the latest release of %s" % repo)
-        rel = json.loads(fetch(RELEASES_API % repo))
-        asset = next((a for a in rel.get("assets", [])
-                      if re.match(r"uefi-installer.*\.zip$", a["name"])), None)
-        if not asset:
-            raise Fail("Latest release of %s has no uefi-installer*.zip asset." % repo)
+        tag, asset = find_uefi_release(repo)
         z = CACHE / asset["name"]
-        download(asset["browser_download_url"], z, "%s %s" % (asset["name"], rel.get("tag_name")))
+        download(asset["browser_download_url"], z, "%s %s" % (asset["name"], tag))
     with zipfile.ZipFile(z) as zf:
         names = zf.namelist()
     ok = (any(n.endswith("_UEFI.fd") for n in names)
@@ -964,7 +989,7 @@ def build_parser():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--iso", help="Windows 11 ARM64 ISO (prompted if omitted)")
     ap.add_argument("--uefi-zip", help="UEFI installer zip for your device (default: latest release of a known device)")
-    ap.add_argument("--repo", help="GitHub owner/name to fetch the latest uefi-installer*.zip from")
+    ap.add_argument("--repo", help="GitHub repo (owner/name or a github.com link) to fetch the latest uefi-installer*.zip from")
     ap.add_argument("--force-device", action="store_true", help="skip the zip-vs-device name check")
     ap.add_argument("--allow-non-ab", action="store_true", help="allow devices without A/B slots (overwrites the only boot image)")
     ap.add_argument("--image-index", type=int, help="install.wim image index (default: Pro)")

@@ -2,7 +2,7 @@
 
 One-command installer for **Windows on ARM + edk2-msm UEFI** on rooted Android devices, run from a **Windows or macOS** PC. It automates the manual dual-boot flow: back up the running boot slot, put Windows on the ESP + NTFS partitions, copy the boot slot into the other slot, run the UEFI installer zip against it, and boot it.
 
-You supply a **Windows 11 ARM64 ISO** and, for your device, a **UEFI installer zip** (`*_UEFI.fd` + `BootShim.Dualboot.bin` + `update-binary`, the edk2-msm format). For known devices (currently POCO F4 / Redmi K40S `munch`) the latest release is downloaded if you omit it; for any other device pass `--uefi-zip` or `--repo owner/name`.
+You supply a **Windows 11 ARM64 ISO** and, for your device, a **UEFI installer zip** (`*_UEFI.fd` + `BootShim.Dualboot.bin` + `update-binary`, the edk2-msm format). For known devices (currently POCO F4 / Redmi K40S `munch`) the latest release is downloaded if you omit it; for any other device pass `--uefi-zip`, or `--repo` with `owner/name` or a full github.com link (the wizard has a field for it that checks the repository's latest release before you continue).
 
 > The installer is device-agnostic, but the UEFI firmware is not: Windows only boots on a device if someone has ported edk2 to it. The installer refuses a zip whose target device name does not match the connected one (`--force-device` overrides).
 
@@ -33,7 +33,7 @@ Windows:
 py -3 woa_installer.py --iso C:\Users\me\Downloads\Win11_ARM64.iso
 ```
 
-Useful flags: `--uefi-zip PATH`, `--repo owner/name`, `--esp-part`, `--win-part`, `--allow-non-ab`, `--image-index N` (default: Pro), `--bcd PATH`, `--create-partitions`, `--esp-size`, `--win-size`, `--phone-tools`, `--dry-run` (read-only rehearsal), `--skip-windows` (UEFI only), `--no-reboot`.
+Useful flags: `--uefi-zip PATH`, `--repo owner/name|github-link`, `--esp-part`, `--win-part`, `--allow-non-ab`, `--image-index N` (default: Pro), `--bcd PATH`, `--create-partitions`, `--esp-size`, `--win-size`, `--phone-tools`, `--dry-run` (read-only rehearsal), `--skip-windows` (UEFI only), `--no-reboot`.
 
 ## Unattended first boot
 

@@ -131,6 +131,7 @@ class Wizard(tk.Tk):
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
                       dry=True, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
                       host="WOA-DEVICE", lang="", locale="", tz="", drivers="", iso_info=None, edition=None,
+                      repo="", repo_state=None,
                       job=-1, log="", result=None, rerun=False)
         self.page = 0
         self.logbox = None
@@ -360,8 +361,24 @@ class Wizard(tk.Tk):
         Btn(bar, "Choose zip…", self._pick_uefi, "secondary").pack(side="left")
         if self._auto_ok():
             Btn(bar, "Use latest release", self._auto_uefi, "secondary").pack(side="left", padx=8)
+        tk.Label(uefi, text="…or download from a GitHub repository", bg=C["card"], fg=C["text"],
+                 anchor="w").pack(fill="x", padx=20)
+        rrow = tk.Frame(uefi, bg=C["card"])
+        rrow.pack(fill="x", padx=20, pady=(4, 14))
+        self.repo_v = tk.StringVar(value=self.s["repo"])
+        ent = tk.Entry(rrow, textvariable=self.repo_v, width=40, relief="flat", bg=C["sec"], fg=C["text"],
+                       insertbackground=C["text"], highlightthickness=1, highlightbackground=C["border"])
+        ent.pack(side="left", ipady=7)
+        ent.bind("<Return>", lambda e: self._use_repo())
+        Btn(rrow, "Use repo", self._use_repo, "secondary").pack(side="left", padx=8)
+        tk.Label(uefi, text="owner/name or https://github.com/owner/name", bg=C["card"], fg=C["muted"],
+                 font=self.f_small, anchor="w").pack(fill="x", padx=20, pady=(0, 12))
         self._files_refresh()
         self.nav(back=lambda: self.show(1), nxt=lambda: self.show(3), nxt_ok=self._files_ok())
+
+    def _repo_ok(self):
+        st = self.s["repo_state"]
+        return bool(self.s["repo"]) and isinstance(st, dict)
 
     def _img(self):
         """The selected edition's image record (name, languages, ...) or None."""
@@ -384,7 +401,7 @@ class Wizard(tk.Tk):
     def _files_ok(self):
         iso = self.s["iso"]
         return bool(iso and Path(iso).is_file() and isinstance(self.s["iso_info"], dict)
-                    and (self.s["uefi"] or self._auto_ok()) and not self._zip_problem())
+                    and (self.s["uefi"] or self._repo_ok() or self._auto_ok()) and not self._zip_problem())
 
     def _zip_problem(self):
         z, i = self.s["uefi"], self.s["info"]
@@ -424,11 +441,19 @@ class Wizard(tk.Tk):
             bad = self._zip_problem()
             self.uefi_lbl.configure(text=Path(z).name + ("\n✕ " + bad if bad else "\n✓ Compatible"),
                                     fg=C["err"] if bad else C["ok"])
+        elif self.s["repo"] and self.s["repo_state"] == "busy":
+            self.uefi_lbl.configure(text="Checking %s…" % self.s["repo"], fg=C["muted"])
+        elif self.s["repo"] and isinstance(self.s["repo_state"], dict):
+            st = self.s["repo_state"]
+            self.uefi_lbl.configure(text="✓ %s · latest release %s · %s" % (self.s["repo"], (st["tag"][:24] + "…") if len(st["tag"]) > 25 else st["tag"], st["name"]),
+                                    fg=C["ok"])
+        elif self.s["repo"] and isinstance(self.s["repo_state"], tuple):
+            self.uefi_lbl.configure(text="✕ " + self.s["repo_state"][1], fg=C["err"])
         elif self._auto_ok():
             self.uefi_lbl.configure(text="The latest release is downloaded automatically.", fg=C["muted"])
         else:
-            self.uefi_lbl.configure(text="Required for this device. Choose the zip you were given.",
-                                    fg=C["muted"])
+            self.uefi_lbl.configure(text="Required for this device. Choose the zip you were given, "
+                                    "or download it from a GitHub repository.", fg=C["muted"])
 
     def _pick_iso(self):
         f = filedialog.askopenfilename(title="Windows 11 ARM64 ISO",
@@ -456,12 +481,31 @@ class Wizard(tk.Tk):
     def _pick_uefi(self):
         f = filedialog.askopenfilename(title="UEFI installer zip", filetypes=[("Zip", "*.zip")])
         if f:
-            self.s["uefi"] = f
+            self.s.update(uefi=f, repo="", repo_state=None)
             self.show(2)
 
     def _auto_uefi(self):
-        self.s["uefi"] = ""
+        self.s.update(uefi="", repo="", repo_state=None)
         self.show(2)
+
+    def _use_repo(self):
+        try:
+            repo = w.parse_repo(self.repo_v.get())
+        except w.Fail as e:
+            self.s.update(repo=self.repo_v.get().strip(), repo_state=("err", str(e)), uefi="")
+            self.show(2)
+            return
+        self.s.update(repo=repo, repo_state="busy", uefi="")
+        self.show(2)
+
+        def work():
+            try:
+                tag, asset = w.find_uefi_release(repo)
+                res = {"tag": tag, "name": asset["name"]}
+            except w.Fail as e:
+                res = ("err", str(e))
+            self.q.put(("repo", (repo, res)))
+        threading.Thread(target=work, daemon=True).start()
 
     def p_storage(self):
         parts = self.s["info"].get("parts")
@@ -712,6 +756,8 @@ class Wizard(tk.Tk):
             a += ["--iso", s["iso"]]
         if s["uefi"]:
             a += ["--uefi-zip", s["uefi"]]
+        elif s["repo"] and isinstance(s["repo_state"], dict):
+            a += ["--repo", s["repo"]]
         if isinstance(s["iso_info"], dict):
             a += ["--image-index", str(s["edition"])]
         if s["dry"]:
@@ -785,6 +831,12 @@ class Wizard(tk.Tk):
                             lang = res["default_lang"]
                             self.s["lang"] = lang
                             self.s["locale"] = lang if lang in data.LOCALES else "en-US"
+                        if self.page == 2:
+                            self.show(2)
+                elif kind == "repo":
+                    repo, res = p
+                    if repo == self.s["repo"]:
+                        self.s["repo_state"] = res
                         if self.page == 2:
                             self.show(2)
                 elif kind == "probed":
