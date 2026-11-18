@@ -1,5 +1,3 @@
 @echo off
 cd /d "%~dp0"
-where py >nul 2>nul && (py -3 woa_installer.py %*) || (python woa_installer.py %*)
-echo.
-pause
+where pyw >nul 2>nul && (start "" pyw -3 woa_gui.py) || (start "" pythonw woa_gui.py)

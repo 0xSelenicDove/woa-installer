@@ -17,7 +17,11 @@ PC requirements: Python 3.8+. macOS also needs `brew install wimlib`; on Windows
 
 ## Use
 
-macOS: double-click `install-macos.command`, or
+**GUI:** run `python3 woa_gui.py` (macOS: double-click `install-macos.command`; Windows: double-click `install-windows.bat`), pick your ISO (and optionally a UEFI zip), leave **Dry run** ticked for a first pass, then Start. Confirmations (`ERASE`, `WIPE DATA`) appear as dialogs. Release builds (`woa-installer-macos.zip`, `woa-installer-windows.zip`, built by `.github/workflows/gui.yml`) bundle Python; the GUI needs Tk, which ships with python.org Python.
+
+**Command line**
+
+macOS (`install-macos.command --cli` also works):
 
 ```bash
 python3 woa_installer.py --iso ~/Downloads/Win11_ARM64.iso

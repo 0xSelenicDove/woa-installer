@@ -73,8 +73,23 @@ def step(n, msg):
     say("\n[%s] %s" % (n, msg))
 
 
+PROMPT = input          # the GUI swaps this for dialogs
+
+
 def ask_yes(prompt):
-    return input(prompt + " [y/N] ").strip().lower() in ("y", "yes")
+    return PROMPT(prompt + " [y/N] ").strip().lower() in ("y", "yes")
+
+
+def run_stream(cmd):
+    """Run a long command, echoing its output line by line (works under the GUI too)."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    last = 0.0
+    for raw in iter(lambda: p.stdout.readline(), b""):
+        if time.time() - last > 1:
+            last = time.time()
+            say("    " + raw.decode(errors="replace").strip())
+    if p.wait() != 0:
+        raise Fail("command failed: " + " ".join(map(str, cmd)))
 
 
 def human(n):
@@ -434,7 +449,7 @@ def create_partitions(ph, tools):
         say("  [dry-run] not writing")
         return False
     need = "WIPE DATA" if shrink else "PARTITION"
-    if input("  Type %s to rewrite the partition table: " % need).strip() != need:
+    if PROMPT("  Type %s to rewrite the partition table: " % need).strip() != need:
         raise Fail("aborted")
     g.commit(ents)
     chk = Gpt(ph, disk)
@@ -804,7 +819,7 @@ def switch_to_uefi(ph, tools):
 
 
 # --------------------------------------------------------------------------- #
-def main():
+def main(argv=None):
     global ARGS
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -827,7 +842,7 @@ def main():
     ap.add_argument("--skip-windows", action="store_true", help="only install the UEFI (skip Windows)")
     ap.add_argument("--no-reboot", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="read-only: show what would be written")
-    ARGS = ap.parse_args()
+    ARGS = ap.parse_args(argv)
 
     say("woa-installer - Windows on ARM + edk2-msm UEFI for rooted Android phones")
     if ARGS.dry_run:
@@ -835,7 +850,7 @@ def main():
 
     iso = ARGS.iso
     if not iso and not ARGS.skip_windows:
-        iso = input("Path to your Windows 11 ARM64 ISO: ").strip().strip('"')
+        iso = PROMPT("Path to your Windows 11 ARM64 ISO: ").strip().strip('"')
     if not ARGS.skip_windows and not Path(iso).is_file():
         raise Fail("ISO not found: %s" % iso)
 
@@ -878,13 +893,13 @@ def main():
                 say("  using image %d: %s" % (img["index"], img["name"]))
                 say("\n  This will ERASE %s (ESP) and %s (Windows) on the phone." %
                     (parts["ESP"][0], parts["Windows"][0]))
-                if not ARGS.dry_run and input("  Type ERASE to continue: ").strip() != "ERASE":
+                if not ARGS.dry_run and PROMPT("  Type ERASE to continue: ").strip() != "ERASE":
                     raise Fail("aborted")
                 say("  extracting the image (this takes a while) ...")
                 tree = tmp / "win"
                 tree.mkdir()
-                run([tools.wimlib, "apply", str(wim), str(img["index"]), str(tree), "--no-acls"],
-                    capture=False)
+                run_stream([tools.wimlib, "apply", str(wim), str(img["index"]), str(tree),
+                            "--no-acls"])
 
             step("5/6", "Writing Windows to the phone")
             esp_mp, win_mp = WORK + "/esp", WORK + "/win"

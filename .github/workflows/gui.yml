@@ -1,0 +1,36 @@
+name: Build GUI
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pyinstaller
+      - run: python tests/test_gpt.py
+      - run: pyinstaller --onefile --windowed --name woa-installer woa_gui.py
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: cd dist && zip -r woa-installer-macos.zip woa-installer.app
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive dist\woa-installer.exe dist\woa-installer-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-${{ matrix.os }}
+          path: dist/*.zip
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
