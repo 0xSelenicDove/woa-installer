@@ -227,7 +227,7 @@ class Phone:
         """Run as root through Magisk su (cmd must not contain single quotes)."""
         assert "'" not in cmd, cmd
         if mutating and self.dry:
-            say("  [dry-run] su: " + cmd)
+            say("  [pre-check] su: " + cmd)
             return ""
         r = self.adb("shell", "su -c '%s'" % cmd, check=check)
         return r.stdout.decode(errors="replace").strip()
@@ -485,7 +485,7 @@ def create_partitions(ph, tools):
     bk.write_bytes(g.read(0, nsec))
     say("  saved the current GPT to %s" % bk)
     if ph.dry:
-        say("  [dry-run] not writing")
+        say("  [pre-check] not writing")
         return False
     need = "WIPE DATA" if shrink else "PARTITION"
     if PROMPT("  Type %s to rewrite the partition table: " % need).strip() != need:
@@ -728,7 +728,7 @@ def mount_ntfs(ph, dev, mp, tl=None):
     for cmd in ("%s -o rw,noatime %s %s" % (drv, dev, mp),
                 "mount -t ntfs3 -o noatime %s %s" % (dev, mp)):
         if ph.dry:
-            say("  [dry-run] su: " + cmd)
+            say("  [pre-check] su: " + cmd)
             return
         ph.su(cmd + " 2>&1", check=False)
         if ph.su('grep -c " %s " /proc/mounts' % mp, check=False).strip() not in ("", "0"):
@@ -772,7 +772,7 @@ def ensure_phone_tools(ph):
                 tf.extractall(d)
         src = d
     if ph.dry:
-        say("  [dry-run] would push %s from %s" % (", ".join(missing), src))
+        say("  [pre-check] would push %s from %s" % (", ".join(missing), src))
         return {t: WORK + "/bin/" + t for t in PHONE_TOOLS}
     ph.su("mkdir -p %s/bin" % WORK)
     for t in missing:
@@ -824,7 +824,7 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
                 pass
     say("  %s: %d files, %s" % (label, files, human(total)))
     if ph.dry:
-        say("  [dry-run] would stream to " + dest_cmd_dir)
+        say("  [pre-check] would stream to " + dest_cmd_dir)
         return
     proc = ph.stream_in("tar -x -C %s" % dest_cmd_dir)
     done = [0, 0.0]
@@ -890,7 +890,7 @@ def build_esp_tree(win_tree, bcd, esp_dir):
     if not (efi / "bootmgfw.efi").exists():
         raise Fail("Image has no Windows/Boot/EFI/bootmgfw.efi - not an ARM64 UEFI image?")
     check_arm64(efi / "bootmgfw.efi")
-    for extra in ("System32/winload.efi",):          # present on full (non-dry) extractions
+    for extra in ("System32/winload.efi",):          # present on full (full install) extractions
         if (win_tree / "Windows" / extra).is_file():
             check_arm64(win_tree / "Windows" / extra)
     for f in efi.iterdir():
@@ -919,7 +919,7 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
     if tpl.is_file():
         return tpl
     say("  no BCD template; trying to reuse the BCD already on the device's ESP")
-    try:                # read-only, so it also runs during --dry-run
+    try:                # read-only, so it also runs during the pre-check
         ph.adb("shell", "su -c 'mkdir -p %s && umount %s 2>/dev/null; mount -t vfat -o ro %s %s'"
                % (esp_mp, esp_mp, esp_dev, esp_mp), check=False)
     except Fail:
@@ -934,7 +934,7 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
     say("  saving the device's current BCD to %s" % out)
     with open(out, "wb") as f:
         f.write(ph.adb("exec-out", "su -c 'cat %s'" % old).stdout)
-    ph.su("umount %s; rmdir %s %s" % (esp_mp, esp_mp, WORK), check=False)   # read-only; tidy up even on --dry-run
+    ph.su("umount %s; rmdir %s %s" % (esp_mp, esp_mp, WORK), check=False)   # read-only; tidy up even during the pre-check
     return out
 
 
@@ -1071,7 +1071,7 @@ def install_uefi(ph, zip_path):
 def switch_to_uefi(ph, tools):
     dst = other_slot(ph.slot)
     if ph.dry:
-        say("  [dry-run] adb reboot; fastboot set_active %s" % (dst[1:] or "(none)"))
+        say("  [pre-check] adb reboot; fastboot set_active %s" % (dst[1:] or "(none)"))
         return
     if not dst:
         ph.adb("reboot", check=False)
@@ -1121,7 +1121,8 @@ def build_parser():
     ap.add_argument("--drivers", help="folder of .inf drivers to copy to C:\\Drivers and install at first logon")
     ap.add_argument("--skip-windows", action="store_true", help="only install the UEFI (skip Windows)")
     ap.add_argument("--no-reboot", action="store_true")
-    ap.add_argument("--dry-run", action="store_true", help="read-only: show what would be written")
+    ap.add_argument("--dry-run", "--pre-check", dest="dry_run", action="store_true",
+                    help="pre-check: verify everything and show what would be written, without changing the device")
     return ap
 
 
@@ -1158,7 +1159,7 @@ def main(argv=None):
 
     say("woa-installer - Windows on ARM + edk2-msm UEFI for rooted Android devices")
     if ARGS.dry_run:
-        say("DRY RUN: nothing on the device will be modified.")
+        say("PRE-CHECK: nothing on the device will be modified.")
 
     iso = ARGS.iso
     if not iso and not ARGS.skip_windows:
@@ -1214,7 +1215,7 @@ def main(argv=None):
                 tree = tmp / "win"
                 tree.mkdir()
                 if ARGS.dry_run:
-                    say("  [dry-run] extracting only Windows/Boot to test the ESP layout ...")
+                    say("  [pre-check] extracting only Windows/Boot to test the ESP layout ...")
                     (tree / "Windows").mkdir()
                     run_stream([tools.wimlib, "extract", str(wim), str(img["index"]),
                                 "/Windows/Boot", "--dest-dir", str(tree / "Windows"), "--no-acls"])
@@ -1253,7 +1254,7 @@ def main(argv=None):
                         raise Fail("verification failed: %s missing on the device" % where)
             ph.su("sync", mutating=True)
             ph.su("umount %s; umount %s" % (esp_mp, win_mp), check=False, mutating=True)
-            say("  [dry-run] nothing written." if ph.dry else "  Windows files written and verified.")
+            say("  [pre-check] nothing written." if ph.dry else "  Windows files written and verified.")
         else:
             step("4/6", "Skipping Windows (--skip-windows)")
             step("5/6", "Skipping Windows (--skip-windows)")
@@ -1265,7 +1266,7 @@ def main(argv=None):
         shutil.rmtree(tmp, ignore_errors=True)
 
     if ARGS.dry_run:
-        say("\nDry run finished. Nothing on the device was changed.")
+        say("\nPre-check finished. Nothing on the device was changed.")
         return
     if ARGS.no_reboot:
         say("\nDone. Boot the UEFI slot with:  fastboot set_active %s && fastboot reboot"

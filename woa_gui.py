@@ -2,7 +2,7 @@
 """Guided Tk wizard for woa_installer (standard library only).
 
 Design notes: one decision per screen, a visible step list, plain-language copy,
-read-only "rehearsal" on by default, destructive confirmations spelled out, and a
+a read-only "pre-check" step before anything is changed, destructive confirmations spelled out, and a
 live checklist (not a raw log) while installing. The log is one click away.
 """
 import contextlib
@@ -53,7 +53,8 @@ def is_dark():
 
 
 C = DARK if is_dark() else LIGHT
-STEPS = ["Welcome", "Device", "Files", "Storage", "Setup", "Review", "Install", "Done"]
+STEPS = ["Welcome", "Device", "Files", "Storage", "Setup", "Review", "Pre-check", "Install", "Done"]
+REVIEW, PRECHECK, INSTALL, DONE = 5, 6, 7, 8
 JOBS = ["Check the device", "Prepare UEFI & partitions", "Back up boot image",
         "Read Windows ISO", "Write Windows", "Install UEFI"]
 
@@ -129,12 +130,12 @@ class Wizard(tk.Tk):
         self.f_base = base
         self.q = queue.Queue()
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
-                      dry=True, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
+                      dry=False, pc=None, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
                       host="WOA-DEVICE", lang="", locale="", tz="", drivers="", iso_info=None, edition=None,
                       repo="", repo_state=None, sha="",
                       job=-1, log="", result=None, rerun=False)
         self.page = 0
-        self.logbox = None
+        self.logbox = self.job_rows = self.status = None
         self._shell()
         self.show(0)
         self.after(100, self._pump)
@@ -199,7 +200,7 @@ class Wizard(tk.Tk):
                 lbl.configure(fg=C["side_text"], font=self.f_base)
 
     def clear(self):
-        self.logbox = None
+        self.logbox = self.job_rows = self.status = None
         for f in (self.body, self.foot):
             for c in f.winfo_children():
                 c.destroy()
@@ -220,7 +221,7 @@ class Wizard(tk.Tk):
         self.clear()
         self._stepper()
         [self.p_welcome, self.p_phone, self.p_files, self.p_storage, self.p_setup, self.p_review,
-         self.p_install, self.p_done][n]()
+         self.p_precheck, self.p_install, self.p_done][n]()
 
     def title_(self, text, sub=None):
         tk.Label(self.body, text=text, bg=C["bg"], fg=C["text"], font=self.f_title,
@@ -253,8 +254,8 @@ class Wizard(tk.Tk):
             tk.Label(c, text="✓  " + t, bg=C["card"], fg=C["text"], anchor="w").pack(
                 fill="x", padx=20, pady=3)
         tk.Frame(c, height=12, bg=C["card"]).pack()
-        self.callout(self.body, "Your boot image is backed up first, and you can rehearse the whole "
-                     "install without changing anything. Creating new partitions can still erase "
+        self.callout(self.body, "Your boot image is backed up first, and a pre-check verifies everything "
+                     "before anything is changed. Creating new partitions can still erase "
                      "all data on the device, so back up your files.").pack(fill="x", pady=16)
         self.nav(nxt=lambda: self.show(1), nxt_text="Get started")
 
@@ -745,9 +746,8 @@ class Wizard(tk.Tk):
             tk.Label(r, text=t, bg=C["card"], fg=C["text"], anchor="w").pack(side="left")
         tk.Frame(c, height=8, bg=C["card"]).pack()
         tk.Frame(self.body, height=14, bg=C["bg"]).pack()
-        self.dry = tk.BooleanVar(value=self.s["dry"])
-        Check(self.body, "Rehearse first (recommended): reads the device but changes nothing",
-              self.dry, bg=C["bg"], command=self._review_btn).pack(anchor="w")
+        tk.Label(self.body, text="Next, a pre-check verifies your device and files. It changes nothing.",
+                 bg=C["bg"], fg=C["muted"], anchor="w").pack(anchor="w", pady=(0, 10))
         self.nonab = tk.BooleanVar(value=self.s["nonab"])
         if not i["ab"]:
             Check(self.body, "Allow overwriting the only boot image (this device has no A/B slots)",
@@ -756,17 +756,14 @@ class Wizard(tk.Tk):
         Check(self.body, "Don't restart the device when finished", self.noreb, bg=C["bg"]
               ).pack(anchor="w", pady=6)
         self.nav(back=lambda: self.show(3 if self.s["create"] else 4), nxt=self._start,
-                 nxt_text="Start rehearsal")
+                 nxt_text="Start pre-check")
         self._review_btn()
 
     def _review_btn(self):
-        self.next_btn.configure(text="Start rehearsal" if self.dry.get() else "Install now")
-        self.next_btn.set_enabled(self.dry.get() or self.nonab.get() or self.s["info"]["ab"])
+        self.next_btn.set_enabled(self.nonab.get() or self.s["info"]["ab"])
 
-    # ---- install
-    def p_install(self):
-        self.title_("Rehearsing…" if self.s["dry"] else "Installing…",
-                    "Keep the device connected. You may be asked to confirm a step.")
+    # ---- pre-check and install
+    def _job_card(self):
         c = card(self.body)
         c.pack(fill="x")
         tk.Frame(c, height=8, bg=C["card"]).pack()
@@ -783,9 +780,49 @@ class Wizard(tk.Tk):
         self.status = tk.Label(self.body, text="", bg=C["bg"], fg=C["muted"], anchor="w",
                                font=self.f_small)
         self.status.pack(fill="x", pady=(10, 0))
-        self._details()
         self.s["job"] = -1
-        threading.Thread(target=self._worker, args=(self._argv(),), daemon=True).start()
+
+    def p_precheck(self):
+        pc = self.s["pc"]
+        if pc is None:                          # first visit: run it (nothing is changed)
+            self.s.update(pc="running", dry=True, log="", result=None, rerun=False)
+            threading.Thread(target=self._worker, args=(self._argv(), "pc"), daemon=True).start()
+            pc = "running"
+        if pc == "running":
+            self.title_("Running pre-check…", "Checking your device, files and the plan. "
+                        "Nothing is changed.")
+            self._job_card()
+            self._details()
+            self.nav()
+        elif pc[0] == "ok":
+            self.title_("Pre-check passed", "Nothing on the device was changed.")
+            self.callout(self.body, "Everything checked out. When you're ready, start the install.",
+                         "ok").pack(fill="x")
+            self._details()
+            self.nav(back=lambda: self.show(REVIEW), nxt=self._start_install, nxt_text="Install now")
+        else:
+            self.title_("Pre-check found a problem", "Nothing on the device was changed.")
+            self.callout(self.body, pc[1] or "Unknown error.", "err").pack(fill="x")
+            self.callout(self.body, "You can still continue, but the install may fail partway and leave "
+                         "the device without a working Windows. Your boot image is backed up first.",
+                         "warn").pack(fill="x", pady=14)
+            self.proceed_v = tk.BooleanVar(value=False)
+            Check(self.body, "I understand the risk and want to install anyway", self.proceed_v,
+                  bg=C["bg"], command=lambda: self.next_btn.set_enabled(self.proceed_v.get())
+                  ).pack(anchor="w")
+            self._details()
+            self.nav(back=lambda: self.show(REVIEW), nxt=self._start_install,
+                     nxt_text="Install anyway", nxt_ok=False)
+
+    def _start_install(self):
+        self.s.update(dry=False, log="", result=None, rerun=False)
+        self.show(INSTALL)
+
+    def p_install(self):
+        self.title_("Installing…", "Keep the device connected. You may be asked to confirm a step.")
+        self._job_card()
+        self._details()
+        threading.Thread(target=self._worker, args=(self._argv(), "install"), daemon=True).start()
 
     def _details(self):
         self.log_btn = Btn(self.body, "Show details", self._toggle_log, "secondary")
@@ -859,9 +896,9 @@ class Wizard(tk.Tk):
         return a
 
     def _start(self):
-        self.s.update(dry=self.dry.get(), nonab=self.nonab.get(), noreboot=self.noreb.get(),
+        self.s.update(nonab=self.nonab.get(), noreboot=self.noreb.get(), pc=None, dry=True,
                       log="", result=None, rerun=False)
-        self.show(6)
+        self.show(PRECHECK)
 
     def _prompt_from_thread(self, msg):
         box = {"event": threading.Event(), "answer": ""}
@@ -869,7 +906,7 @@ class Wizard(tk.Tk):
         box["event"].wait()
         return box["answer"]
 
-    def _worker(self, argv):
+    def _worker(self, argv, mode):
         w.PROMPT = self._prompt_from_thread
         res = ("ok", "")
         w.NEEDS_RERUN = False
@@ -883,7 +920,7 @@ class Wizard(tk.Tk):
             res = ("fail", "Invalid options.")
         except Exception as e:      # noqa: BLE001 - surface anything unexpected
             res = ("fail", "Unexpected error: %r" % e)
-        self.q.put(("done", res))
+        self.q.put(("done", (mode, res)))
 
     def _pump(self):
         try:
@@ -893,10 +930,10 @@ class Wizard(tk.Tk):
                     self._log(p)
                     for m in re.finditer(r"\[(\d)b?/6\]", p):
                         self.s["job"] = int(m.group(1)) - 1
-                        if self.page == 6:
+                        if self.job_rows is not None:
                             self._set_job(self.s["job"])
                     lines = [x for x in p.replace("\r", "\n").split("\n") if x.strip()]
-                    if lines and self.page == 6:
+                    if lines and self.status is not None:
                         self.status.configure(text=lines[-1].strip()[:110])
                 elif kind == "prompt":
                     msg, box = p
@@ -924,8 +961,14 @@ class Wizard(tk.Tk):
                     if self.page == 1:
                         self.show(1)
                 elif kind == "done":
-                    self.s["result"] = p
-                    self.show(7)
+                    mode, res = p
+                    if mode == "pc":
+                        self.s["pc"] = ("ok",) if res[0] == "ok" else ("fail", res[1])
+                        if self.page == PRECHECK:
+                            self.show(PRECHECK)
+                    else:
+                        self.s["result"] = res
+                        self.show(DONE)
         except queue.Empty:
             pass
         self.after(100, self._pump)
@@ -939,11 +982,6 @@ class Wizard(tk.Tk):
                          "on, make sure Magisk root works, then run this guide again.", "ok"
                          ).pack(fill="x")
             self.nav(nxt=self.destroy, nxt_text="Close")
-        elif kind == "ok" and self.s["dry"]:
-            self.title_("Rehearsal finished", "Nothing on the device was changed.")
-            self.callout(self.body, "Everything checked out. When you're ready, run it for real.",
-                         "ok").pack(fill="x")
-            self.nav(back=lambda: self.show(5), nxt=self._run_real, nxt_text="Install now")
         elif kind == "ok":
             self.title_("All done", "Windows is installed.")
             self.callout(self.body, "The device is restarting into Windows. The first boot runs Windows "
@@ -956,12 +994,8 @@ class Wizard(tk.Tk):
             self.callout(self.body, msg or "Unknown error.", "err").pack(fill="x")
             tk.Label(self.body, text="Your boot image backup is in ~/.woa-installer/backup.",
                      bg=C["bg"], fg=C["muted"], anchor="w").pack(fill="x", pady=10)
-            self.nav(back=lambda: self.show(5), nxt=self.destroy, nxt_text="Close")
+            self.nav(back=lambda: self.show(REVIEW), nxt=self.destroy, nxt_text="Close")
         self._details()
-
-    def _run_real(self):
-        self.s.update(dry=False, log="", result=None, rerun=False)
-        self.show(6)
 
 
 class LogWriter:

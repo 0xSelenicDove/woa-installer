@@ -17,7 +17,7 @@ PC requirements: Python 3.8+. macOS also needs `brew install wimlib`; on Windows
 
 ## Use
 
-**Guided GUI:** `python3 woa_gui.py` (macOS: double-click `install-macos.command`; Windows: `install-windows.bat`). A seven-step wizard (Welcome, Device, Files, Storage, Review, Install, Done) checks the device, validates your ISO and UEFI zip, explains what will be erased, and defaults to a read-only **rehearsal** before the real install. Follows the system light/dark theme. Release downloads: `woa-installer-macos.dmg` (Apple Silicon) and `woa-installer-windows.exe`, both bundling Python and unsigned (macOS: right-click > Open the first time; Windows SmartScreen: More info > Run anyway); from source the GUI needs Tk (included with python.org Python).
+**Guided GUI:** `python3 woa_gui.py` (macOS: double-click `install-macos.command`; Windows: `install-windows.bat`). A nine-step wizard (Welcome, Device, Files, Storage, Setup, Review, Pre-check, Install, Done) checks the device, validates your ISO and UEFI zip, explains what will be erased, and runs a read-only **pre-check** before the real install (if it finds a problem you see a warning and can only continue by ticking "install anyway"). Follows the system light/dark theme. Release downloads: `woa-installer-macos.dmg` (Apple Silicon) and `woa-installer-windows.exe`, both bundling Python and unsigned (macOS: right-click > Open the first time; Windows SmartScreen: More info > Run anyway); from source the GUI needs Tk (included with python.org Python).
 
 **Command line**
 
@@ -33,7 +33,7 @@ Windows:
 py -3 woa_installer.py --iso C:\Users\me\Downloads\Win11_ARM64.iso
 ```
 
-Useful flags: `--uefi-zip PATH`, `--repo owner/name|github-link`, `--esp-part`, `--win-part`, `--allow-non-ab`, `--image-index N` (default: Pro), `--bcd PATH`, `--create-partitions`, `--esp-size`, `--win-size`, `--phone-tools`, `--dry-run` (read-only rehearsal), `--skip-windows` (UEFI only), `--no-reboot`.
+Useful flags: `--uefi-zip PATH`, `--repo owner/name|github-link`, `--esp-part`, `--win-part`, `--allow-non-ab`, `--image-index N` (default: Pro), `--bcd PATH`, `--create-partitions`, `--esp-size`, `--win-size`, `--phone-tools`, `--pre-check` / `--dry-run` (verify everything, change nothing), `--skip-windows` (UEFI only), `--no-reboot`.
 
 ## Unattended first boot
 
@@ -52,7 +52,7 @@ By default the installer writes an `unattend.xml` into the Windows image so the 
 
 * If there is enough free space after the last partition, it just adds `esp` and `win` there.
 * Otherwise it shrinks `userdata` (it must be the last partition). **That erases all device data**, so you must type `WIPE DATA`. The installer then runs `fastboot erase userdata` + `erase metadata` and reboots; finish Android setup, re-enable USB debugging, make sure root works, and run the installer again.
-* The old GPT is saved to `~/.woa-installer/backup/`, both copies are rewritten with valid CRCs, and the result is re-read and verified before rebooting. Always try `--dry-run` first.
+* The old GPT is saved to `~/.woa-installer/backup/`, both copies are rewritten with valid CRCs, and the result is re-read and verified before rebooting. Always run the pre-check (`--pre-check`) first.
 
 ## NTFS and FAT on the device
 
@@ -77,4 +77,4 @@ The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`).
 
 ## Status
 
-Not yet run against a real device, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/test_gpt.py` checks the GPT editor offline. Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Use `--dry-run` first.
+Not yet run against a real device, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/test_gpt.py` checks the GPT editor offline. Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Run `--pre-check` first.
