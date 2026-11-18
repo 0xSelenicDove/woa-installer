@@ -27,7 +27,7 @@ macOS (`install-macos.command --cli` also works):
 python3 woa_installer.py --iso ~/Downloads/Win11_ARM64.iso
 ```
 
-Windows: double-click `install-windows.bat`, or
+Windows:
 
 ```bat
 py -3 woa_installer.py --iso C:\Users\me\Downloads\Win11_ARM64.iso
