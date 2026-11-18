@@ -11,19 +11,19 @@ rm -rf dist build; mkdir -p "$OUT" build; cd build
 curl -fsSL -o ntfs-3g.tar.gz "https://github.com/tuxera/ntfs-3g/archive/refs/tags/$NTFS_VER.tar.gz"
 tar xf ntfs-3g.tar.gz
 (cd "ntfs-3g-$NTFS_VER" &&
-  autoreconf -fi >/dev/null 2>&1 &&
+  autoreconf -fi &&
   ./configure --host=aarch64-linux-gnu --disable-shared --enable-static \
     --with-fuse=internal --disable-ntfsprogs-static --disable-library \
     --disable-mount-helper --disable-mtab --without-uuid \
-    LDFLAGS=-static >/dev/null &&
-  make -j"$(nproc)" LDFLAGS=-all-static >/dev/null &&
+    LDFLAGS=-static &&
+  make -j"$(nproc)" LDFLAGS=-all-static &&
   cp src/ntfs-3g "$OUT/ntfs-3g" && cp ntfsprogs/mkntfs "$OUT/mkntfs")
 
 curl -fsSLO "https://github.com/dosfstools/dosfstools/releases/download/v$FAT_VER/dosfstools-$FAT_VER.tar.gz"
 tar xf "dosfstools-$FAT_VER.tar.gz"
 (cd "dosfstools-$FAT_VER" &&
-  ./configure --host=aarch64-linux-gnu LDFLAGS=-static >/dev/null &&
-  make -j"$(nproc)" >/dev/null &&
+  ./configure --host=aarch64-linux-gnu LDFLAGS=-static &&
+  make -j"$(nproc)" &&
   cp src/mkfs.fat "$OUT/mkfs.fat")
 
 aarch64-linux-gnu-strip "$OUT"/* || true
