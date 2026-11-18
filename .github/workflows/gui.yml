@@ -19,18 +19,25 @@ jobs:
       - run: python -m pip install pyinstaller
       - run: python tests/test_gpt.py
       - run: pyinstaller --onefile --windowed --name woa-installer woa_gui.py
-      - name: Package (macOS)
+      - name: Package (macOS dmg)
         if: runner.os == 'macOS'
-        run: cd dist && zip -r woa-installer-macos.zip woa-installer.app
-      - name: Package (Windows)
+        run: |
+          hdiutil create -volname "WOA Installer" -srcfolder dist/woa-installer.app \
+            -ov -format UDZO dist/woa-installer-macos.dmg
+      - name: Package (Windows exe)
         if: runner.os == 'Windows'
-        run: Compress-Archive dist\woa-installer.exe dist\woa-installer-windows.zip
+        shell: pwsh
+        run: Copy-Item dist\woa-installer.exe dist\woa-installer-windows.exe
       - uses: actions/upload-artifact@v4
         with:
           name: gui-${{ matrix.os }}
-          path: dist/*.zip
+          path: |
+            dist/woa-installer-macos.dmg
+            dist/woa-installer-windows.exe
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/woa-installer-macos.dmg
+            dist/woa-installer-windows.exe

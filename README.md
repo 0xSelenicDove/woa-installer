@@ -17,7 +17,7 @@ PC requirements: Python 3.8+. macOS also needs `brew install wimlib`; on Windows
 
 ## Use
 
-**Guided GUI:** `python3 woa_gui.py` (macOS: double-click `install-macos.command`; Windows: `install-windows.bat`). A seven-step wizard (Welcome, Phone, Files, Storage, Review, Install, Done) checks the phone, validates your ISO and UEFI zip, explains what will be erased, and defaults to a read-only **rehearsal** before the real install. Follows the system light/dark theme. Release builds (`woa-installer-macos.zip`, `woa-installer-windows.zip`) bundle Python; from source the GUI needs Tk (included with python.org Python).
+**Guided GUI:** `python3 woa_gui.py` (macOS: double-click `install-macos.command`; Windows: `install-windows.bat`). A seven-step wizard (Welcome, Phone, Files, Storage, Review, Install, Done) checks the phone, validates your ISO and UEFI zip, explains what will be erased, and defaults to a read-only **rehearsal** before the real install. Follows the system light/dark theme. Release downloads: `woa-installer-macos.dmg` (Apple Silicon) and `woa-installer-windows.exe`, both bundling Python and unsigned (macOS: right-click > Open the first time; Windows SmartScreen: More info > Run anyway); from source the GUI needs Tk (included with python.org Python).
 
 **Command line**
 
