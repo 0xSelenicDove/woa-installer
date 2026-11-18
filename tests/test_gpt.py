@@ -74,3 +74,22 @@ g3 = w.Gpt(ph, "sda")
 _, notes3, shrink3 = w.plan_layout(g3, 512 << 20, 64 << 30)
 assert not shrink3 and len(notes3) == 2
 print("free-space path OK")
+
+# FAT32 ESP geometry: the real-device failure was "16896 clusters too few for FAT32, need 65525"
+sys.path.insert(0, str(Path(__file__).parent.parent))
+for sector, size in ((4096, 500 << 20), (512, 500 << 20), (4096, 300 << 20), (512, 64 << 20)):
+    bps, spc = w.fat32_args(sector, size)
+    assert bps == sector and size // (bps * spc) >= 65525, (sector, size, bps, spc)
+assert w.fat32_args(4096, 500 << 20) == (4096, 1) and w.fat32_args(512, 500 << 20) == (512, 8)
+assert w.fat32_args("", 500 << 20)[0] == 512
+print("fat32 geometry OK")
+# too small for FAT32 at 4096-byte sectors: caught before anything is formatted
+class _P:
+    dry = False
+    def su(self, cmd, check=True, mutating=False): return "4096" if "getss" in cmd else ""
+try:
+    w.format_partitions(_P(), {"ESP": ("/dev/x", 100 << 20), "Windows": ("/dev/y", 1 << 40)}, {"mkfs.fat": "newfs_msdos", "mkntfs": "mkntfs"})
+    raise SystemExit("tiny ESP accepted")
+except w.Fail as e:
+    assert "too small" in str(e), e
+print("small-ESP guard OK")

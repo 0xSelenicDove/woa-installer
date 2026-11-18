@@ -784,14 +784,28 @@ def ensure_phone_tools(ph):
     return found
 
 
+def fat32_args(sector, size_bytes):
+    """(bytes/sector, sectors/cluster) for a FAT32 ESP. Tools pick large clusters by default, which
+    leaves a ~500 MB ESP under FAT32's 65525-cluster minimum (fails on 4096-byte-sector UFS)."""
+    sector = int(sector) if str(sector).isdigit() and int(sector) else 512
+    spc = max(1, 4096 // sector)                     # 4 KiB clusters
+    while spc > 1 and size_bytes // (sector * spc) < 66000:
+        spc //= 2                                    # keep comfortably above the FAT32 minimum
+    return sector, spc
+
+
 def format_partitions(ph, parts, tl):
-    sec = ph.su("blockdev --getss " + parts["ESP"][0], check=False) or "512"
-    say("  formatting ESP as FAT32")
+    sec, spc = fat32_args(ph.su("blockdev --getss " + parts["ESP"][0], check=False), parts["ESP"][1])
+    if parts["ESP"][1] // (sec * spc) < 65525:
+        raise Fail("The ESP (%s) is too small for FAT32 with %d-byte sectors (needs at least %s). "
+                   "Create a larger ESP, e.g. --esp-size 512M." % (human(parts["ESP"][1]), sec,
+                                                                   human(65525 * sec)))
+    say("  formatting ESP as FAT32 (%d-byte sectors, %d sector(s) per cluster)" % (sec, spc))
     fat = tl["mkfs.fat"]
     if fat.endswith("newfs_msdos"):
-        ph.su("%s -F 32 -L ESP %s" % (fat, parts["ESP"][0]), mutating=True)
+        ph.su("%s -F 32 -S %d -c %d -L ESP %s" % (fat, sec, spc, parts["ESP"][0]), mutating=True)
     else:
-        ph.su("%s -F 32 -n ESP -S %s %s" % (fat, sec, parts["ESP"][0]), mutating=True)
+        ph.su("%s -F 32 -n ESP -S %d -s %d %s" % (fat, sec, spc, parts["ESP"][0]), mutating=True)
     say("  formatting Windows partition as NTFS (quick)")
     ntfs = tl["mkntfs"]
     ph.su("%s -f -F -L Windows %s" % (ntfs, parts["Windows"][0]), mutating=True)
