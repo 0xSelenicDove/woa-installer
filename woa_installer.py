@@ -731,7 +731,7 @@ def mount_ntfs(ph, dev, mp, tl=None):
             say("  [dry-run] su: " + cmd)
             return
         ph.su(cmd + " 2>&1", check=False)
-        if ph.su("grep -c ' %s ' /proc/mounts" % mp, check=False).strip() not in ("", "0"):
+        if ph.su('grep -c " %s " /proc/mounts' % mp, check=False).strip() not in ("", "0"):
             return
     raise Fail("Could not mount NTFS read-write on the device (tried ntfs-3g and the kernel ntfs3).")
 
@@ -929,7 +929,9 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
         raise Fail(
             "No BCD available. Provide one with --bcd, drop it at assets/BCD, or install\n"
             "Windows once so the ESP already has EFI/Microsoft/Boot/BCD.")
-    out = Path(tempfile.mkdtemp(prefix="woa-bcd-")) / "BCD"
+    out = CACHE / "backup" / ("BCD_%s_%s.bin" % (ph.dev or "device", time.strftime("%Y%m%d-%H%M%S")))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    say("  saving the device's current BCD to %s" % out)
     with open(out, "wb") as f:
         f.write(ph.adb("exec-out", "su -c 'cat %s'" % old).stdout)
     ph.su("umount %s; rmdir %s %s" % (esp_mp, esp_mp, WORK), check=False)   # read-only; tidy up even on --dry-run
@@ -1056,7 +1058,7 @@ def install_uefi(ph, zip_path):
     # retarget the installer: this device's by-name dir and the slot we want to write
     ph.su('sed -i "s|^target=.*|target=%s/boot;|; s|^slot=.*|slot=%s|" %s'
           % (ph.bydir, dst, ub), mutating=True)
-    if not ph.dry and ph.su("grep -c '^slot=%s' %s" % (dst, ub), check=False) != "1":
+    if not ph.dry and ph.su('grep -c "^slot=%s" %s' % (dst, ub), check=False) != "1":
         raise Fail("could not retarget the installer at slot %s" % (dst or "(none)"))
     say("  running the UEFI installer against %s" % ("slot " + dst[1:].upper() if dst else "boot"))
     out = ph.su("cd %s/inst && sh %s dummy 1 %s/uefi-installer.zip 2>&1" % (WORK, ub, WORK),
