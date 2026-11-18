@@ -608,36 +608,86 @@ def parse_repo(text):
     return "%s/%s" % (m.group(1), m.group(2))
 
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_checksum(text, filename):
+    """Extract the SHA-256 for `filename` from a .sha256 / SHA256SUMS style file.
+    Accepts a bare hash, 'hash  name', 'hash *name' and BSD 'SHA256 (name) = hash'."""
+    sums = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        m = re.fullmatch(r"([0-9a-fA-F]{64})(?:\s+\*?(.+))?", line) or \
+            re.fullmatch(r"SHA256 \((.+)\) = ([0-9a-fA-F]{64})", line)
+        if not m:
+            continue
+        if m.re.pattern.startswith("SHA256"):
+            name, digest = m.group(1), m.group(2)
+        else:
+            digest, name = m.group(1), m.group(2)
+        sums[os.path.basename((name or "").strip()) or None] = digest.lower()
+    if filename in sums:
+        return sums[filename]
+    if len(sums) == 1:                    # single entry (or bare hash): it is for this file
+        return next(iter(sums.values()))
+    return None
+
+
 def find_uefi_release(repo):
-    """Latest release of `repo` -> (tag, asset dict); raises Fail if unusable."""
+    """Latest release of `repo` -> (tag, asset, checksum_asset_or_None); raises Fail if unusable."""
     repo = parse_repo(repo)
     try:
         rel = json.loads(fetch(RELEASES_API % repo))
     except (Fail, ValueError):
         raise Fail("Could not read the releases of %s (repository not found, private, or "
                    "it has no releases)." % repo)
-    asset = next((a for a in rel.get("assets", [])
-                  if re.match(r"uefi-installer.*\.zip$", a["name"])), None)
+    assets = rel.get("assets", [])
+    asset = next((a for a in assets if re.match(r"uefi-installer.*\.zip$", a["name"])), None)
     if not asset:
         raise Fail("The latest release of %s (%s) has no uefi-installer*.zip file."
                    % (repo, rel.get("tag_name", "?")))
-    return rel.get("tag_name", "?"), asset
+    names = [asset["name"] + ".sha256", asset["name"] + ".sha256sum", "SHA256SUMS",
+             "SHA256SUMS.txt", "sha256sums.txt", "checksums.txt"]
+    summ = next((a for n in names for a in assets if a["name"] == n), None)
+    return rel.get("tag_name", "?"), asset, summ
 
 
-def get_uefi_zip(path, dev, repo):
+def get_uefi_zip(path, dev, repo, sha256=None, require_checksum=False):
+    expected, source, downloaded = None, "", False
+    if sha256:
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256.strip()):
+            raise Fail("--sha256 must be 64 hex characters.")
+        expected, source = sha256.strip().lower(), "--sha256"
     if path:
         z = Path(path)
         if not z.is_file():
             raise Fail("UEFI zip not found: %s" % z)
+        if not expected:
+            for side in (Path(str(z) + ".sha256"), Path(str(z) + ".sha256sum")):
+                if side.is_file():
+                    expected = parse_checksum(side.read_text(errors="replace"), z.name)
+                    source = side.name
+                    break
     else:
         repo = parse_repo(repo) if repo else None
         if not repo:
             raise Fail("A UEFI installer for '%s' is required. Pass --uefi-zip PATH, or --repo "
                        "owner/name (or a github.com link) to download the latest release." % dev)
         say("  fetching the latest UEFI release of %s" % repo)
-        tag, asset = find_uefi_release(repo)
+        tag, asset, summ = find_uefi_release(repo)
         z = CACHE / asset["name"]
         download(asset["browser_download_url"], z, "%s %s" % (asset["name"], tag))
+        downloaded = True
+        if not expected and summ:
+            text = fetch(summ["browser_download_url"]).decode(errors="replace")
+            expected, source = parse_checksum(text, asset["name"]), "release " + summ["name"]
+            if not expected:
+                say("  WARNING: could not find %s in %s" % (asset["name"], summ["name"]))
     with zipfile.ZipFile(z) as zf:
         names = zf.namelist()
     ok = (any(n.endswith("_UEFI.fd") for n in names)
@@ -646,8 +696,22 @@ def get_uefi_zip(path, dev, repo):
     if not ok:
         raise Fail("%s is not a compatible UEFI installer zip (needs *_UEFI.fd, "
                    "BootShim.Dualboot.bin, META-INF/.../update-binary)." % z.name)
-    sha = hashlib.sha256(z.read_bytes()).hexdigest()
-    say("  UEFI zip: %s  sha256 %s..." % (z.name, sha[:16]))
+    actual = sha256_file(z)
+    if expected:
+        if actual != expected:
+            if downloaded:
+                z.unlink()
+            raise Fail("Checksum mismatch for %s (%s).\n  expected %s\n  got      %s\n"
+                       "The file is corrupt or was tampered with; not using it."
+                       % (z.name, source, expected, actual))
+        say("  UEFI zip: %s  sha256 verified (%s)" % (z.name, source))
+    else:
+        if require_checksum:
+            raise Fail("No checksum to verify %s against (--require-checksum). Pass --sha256 HEX, "
+                       "put a .sha256 file next to the zip, or publish one in the release." % z.name)
+        say("  UEFI zip: %s  sha256 %s" % (z.name, actual))
+        say("  WARNING: not verified - no published checksum. Compare the hash above with the "
+            "publisher's, or pass --sha256.")
     return z
 
 
@@ -775,6 +839,30 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
     print()
 
 
+PE_MACHINES = {0xAA64: "ARM64", 0x8664: "x64", 0x014C: "x86", 0x01C4: "ARM32"}
+
+
+def pe_machine(path):
+    """Machine type of a PE file (e.g. 'ARM64', 'x64'), read from its header."""
+    with open(path, "rb") as f:
+        head = f.read(64)
+        if head[:2] != b"MZ":
+            raise Fail("%s is not a Windows executable." % Path(path).name)
+        f.seek(struct.unpack_from("<I", head, 0x3C)[0])
+        sig = f.read(6)
+    if sig[:4] != b"PE\0\0":
+        raise Fail("%s has no PE header." % Path(path).name)
+    m = struct.unpack("<H", sig[4:6])[0]
+    return PE_MACHINES.get(m, "unknown (0x%04X)" % m)
+
+
+def check_arm64(path):
+    arch = pe_machine(path)
+    if arch != "ARM64":
+        raise Fail("%s is %s code, not ARM64. This ISO is not a Windows on ARM image."
+                   % (Path(path).name, arch))
+
+
 def build_esp_tree(win_tree, bcd, esp_dir):
     """Lay out EFI/Microsoft/Boot + EFI/Boot/bootaa64.efi from the applied image."""
     boot_src = win_tree / "Windows" / "Boot"
@@ -783,6 +871,10 @@ def build_esp_tree(win_tree, bcd, esp_dir):
     efi = boot_src / "EFI"
     if not (efi / "bootmgfw.efi").exists():
         raise Fail("Image has no Windows/Boot/EFI/bootmgfw.efi - not an ARM64 UEFI image?")
+    check_arm64(efi / "bootmgfw.efi")
+    for extra in ("System32/winload.efi",):          # present on full (non-dry) extractions
+        if (win_tree / "Windows" / extra).is_file():
+            check_arm64(win_tree / "Windows" / extra)
     for f in efi.iterdir():
         if f.is_file():
             shutil.copy2(f, dst / f.name)
@@ -983,6 +1075,8 @@ def build_parser():
     ap.add_argument("--iso", help="Windows 11 ARM64 ISO (prompted if omitted)")
     ap.add_argument("--uefi-zip", help="UEFI installer zip for your device (default: latest release of a known device)")
     ap.add_argument("--repo", help="GitHub repo (owner/name or a github.com link) to fetch the latest uefi-installer*.zip from")
+    ap.add_argument("--sha256", help="expected SHA-256 of the UEFI zip (also read from <zip>.sha256 or the release)")
+    ap.add_argument("--require-checksum", action="store_true", help="refuse a UEFI zip that cannot be checksum-verified")
     ap.add_argument("--force-device", action="store_true", help="skip the zip-vs-device name check")
     ap.add_argument("--allow-non-ab", action="store_true", help="allow devices without A/B slots (overwrites the only boot image)")
     ap.add_argument("--image-index", type=int, help="install.wim image index (default: Pro)")
@@ -1061,7 +1155,7 @@ def main(argv=None):
     names = check_device(ph)
 
     step("2/6", "UEFI package and partitions")
-    uefi = get_uefi_zip(ARGS.uefi_zip, ph.dev, ARGS.repo)
+    uefi = get_uefi_zip(ARGS.uefi_zip, ph.dev, ARGS.repo, ARGS.sha256, ARGS.require_checksum)
     check_compat(uefi, names)
     parts = None
     if not ARGS.skip_windows:

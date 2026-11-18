@@ -131,7 +131,7 @@ class Wizard(tk.Tk):
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
                       dry=True, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
                       host="WOA-DEVICE", lang="", locale="", tz="", drivers="", iso_info=None, edition=None,
-                      repo="", repo_state=None,
+                      repo="", repo_state=None, sha="",
                       job=-1, log="", result=None, rerun=False)
         self.page = 0
         self.logbox = None
@@ -356,6 +356,9 @@ class Wizard(tk.Tk):
         self.uefi_lbl = tk.Label(uefi, bg=C["card"], fg=C["muted"], anchor="w", wraplength=520,
                                  justify="left")
         self.uefi_lbl.pack(fill="x", padx=20)
+        self.uefi_note = tk.Label(uefi, bg=C["card"], fg=C["muted"], anchor="w", wraplength=560,
+                                  justify="left", font=self.f_small)
+        self.uefi_note.pack(fill="x", padx=20, pady=(2, 0))
         bar = tk.Frame(uefi, bg=C["card"])
         bar.pack(anchor="w", padx=20, pady=12)
         Btn(bar, "Choose zip…", self._pick_uefi, "secondary").pack(side="left")
@@ -371,6 +374,13 @@ class Wizard(tk.Tk):
         Btn(rrow, "Use repo", self._use_repo, "secondary").pack(side="left", padx=8)
         tk.Label(uefi, text="owner/name or https://github.com/owner/name", bg=C["card"], fg=C["muted"],
                  font=self.f_small, anchor="w").pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(uefi, text="Expected SHA-256 (optional, verifies the zip)", bg=C["card"], fg=C["text"],
+                 anchor="w").pack(fill="x", padx=20)
+        self.sha_v = tk.StringVar(value=self.s["sha"])
+        sent = tk.Entry(uefi, textvariable=self.sha_v, width=64, relief="flat", bg=C["sec"], fg=C["text"],
+                        insertbackground=C["text"], highlightthickness=1, highlightbackground=C["border"])
+        sent.pack(anchor="w", padx=20, pady=(4, 14), ipady=7)
+        sent.bind("<KeyRelease>", self._sha_changed)
         self._files_refresh()
         self.nav(back=lambda: self.show(1), nxt=lambda: self.show(3), nxt_ok=self._files_ok())
 
@@ -392,10 +402,43 @@ class Wizard(tk.Tk):
     def _img_langs(img):
         return img["langs"] or ([img["default_lang"]] if img["default_lang"] else ["en-US"])
 
+    _sha_cache = {}
+
+    def _expected_sha(self):
+        """(hash, source) from the entry, or a <zip>.sha256 sidecar; (None, '') if none."""
+        h = self.s["sha"].strip().lower()
+        if h:
+            return h, "the value you entered"
+        z = self.s["uefi"]
+        for side in ((z + ".sha256"), (z + ".sha256sum")) if z else ():
+            if Path(side).is_file():
+                got = w.parse_checksum(Path(side).read_text(errors="replace"), Path(z).name)
+                if got:
+                    return got, Path(side).name
+        return None, ""
+
+    def _sha_problem(self):
+        h = self.s["sha"].strip()
+        if h and not re.fullmatch(r"[0-9a-fA-F]{64}", h):
+            return "The SHA-256 must be 64 hexadecimal characters."
+        z = self.s["uefi"]
+        exp, src = self._expected_sha()
+        if z and exp:
+            if z not in self._sha_cache:
+                self._sha_cache[z] = w.sha256_file(z)
+            if self._sha_cache[z] != exp:
+                return "Checksum mismatch (%s): the zip is corrupt or has been altered." % src
+        return None
+
+    def _sha_changed(self, _=None):
+        self.s["sha"] = self.sha_v.get()
+        self._files_refresh()
+        self.next_btn.set_enabled(self._files_ok())
+
     def _files_ok(self):
         iso = self.s["iso"]
         return bool(iso and Path(iso).is_file() and isinstance(self.s["iso_info"], dict)
-                    and (self.s["uefi"] or self._repo_ok()) and not self._zip_problem())
+                    and (self.s["uefi"] or self._repo_ok()) and not self._zip_problem() and not self._sha_problem())
 
     def _zip_problem(self):
         z, i = self.s["uefi"], self.s["info"]
@@ -446,6 +489,32 @@ class Wizard(tk.Tk):
         else:
             self.uefi_lbl.configure(text="Required for this device. Choose the zip you were given, "
                                     "or download it from a GitHub repository.", fg=C["muted"])
+        self._uefi_note()
+
+    def _uefi_note(self):
+        bad = self._sha_problem()
+        exp, src = self._expected_sha()
+        z, st = self.s["uefi"], self.s["repo_state"]
+        if bad:
+            self.uefi_note.configure(text="✕ " + bad, fg=C["err"])
+        elif z and exp:
+            self.uefi_note.configure(text="✓ SHA-256 verified (%s)" % src, fg=C["ok"])
+        elif z:
+            self._sha_cache.setdefault(z, w.sha256_file(z))
+            self.uefi_note.configure(text="! Not verified. SHA-256 %s… — paste the publisher's hash below "
+                                     "to check it." % self._sha_cache[z][:16], fg=C["warn"])
+        elif self.s["repo"] and isinstance(st, dict):
+            if exp:
+                self.uefi_note.configure(text="The download will be verified against the hash you entered.",
+                                         fg=C["ok"])
+            elif st.get("sum"):
+                self.uefi_note.configure(text="✓ The release publishes a checksum; the download will be verified.",
+                                         fg=C["ok"])
+            else:
+                self.uefi_note.configure(text="! This release publishes no checksum, so the download can't be "
+                                         "verified unless you enter one below.", fg=C["warn"])
+        else:
+            self.uefi_note.configure(text="")
 
     def _pick_iso(self):
         f = filedialog.askopenfilename(title="Windows 11 ARM64 ISO",
@@ -488,8 +557,8 @@ class Wizard(tk.Tk):
 
         def work():
             try:
-                tag, asset = w.find_uefi_release(repo)
-                res = {"tag": tag, "name": asset["name"]}
+                tag, asset, summ = w.find_uefi_release(repo)
+                res = {"tag": tag, "name": asset["name"], "sum": bool(summ)}
             except w.Fail as e:
                 res = ("err", str(e))
             self.q.put(("repo", (repo, res)))
@@ -746,6 +815,8 @@ class Wizard(tk.Tk):
             a += ["--uefi-zip", s["uefi"]]
         elif s["repo"] and isinstance(s["repo_state"], dict):
             a += ["--repo", s["repo"]]
+        if s["sha"].strip():
+            a += ["--sha256", s["sha"].strip()]
         if isinstance(s["iso_info"], dict):
             a += ["--image-index", str(s["edition"])]
         if s["dry"]:

@@ -62,6 +62,12 @@ Android has no NTFS-3G, so the installer pushes static aarch64 `mkntfs`, `ntfs-3
 
 The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`). The installer uses, in order: `--bcd`, `assets/BCD`, or the BCD already on the device's ESP. Put a BCD with the settings from the main repo's *Optimal BCD Configuration* at `assets/BCD` for clean installs.
 
+## What is verified
+
+* **UEFI zip:** must contain `*_UEFI.fd`, `BootShim.Dualboot.bin` and the `update-binary`; its device name must match the connected device (`--force-device` overrides); its own script re-checks the device and must report success before slots are switched.
+* **UEFI zip integrity:** SHA-256 is compared with `--sha256`, a `<zip>.sha256` file next to it, or the checksum published in the GitHub release (`<asset>.sha256`, `SHA256SUMS`, `checksums.txt`). A mismatch stops the install. With no checksum available it warns and prints the hash; `--require-checksum` turns that into an error. The wizard has an optional SHA-256 field and shows the state.
+* **Windows image:** only ARM64 editions are offered (from the image's metadata), `--image-index` must be an ARM64 one, and the extracted `bootmgfw.efi` / `winload.efi` are checked to be ARM64 PE binaries, so an x64 ISO is rejected.
+
 ## Safety
 
 * The running boot image is saved to `~/.woa-installer/backup/` (and `/sdcard`) before anything is touched, and the running slot is never modified.
