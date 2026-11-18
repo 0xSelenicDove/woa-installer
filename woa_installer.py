@@ -52,6 +52,7 @@ BYNAME_DIRS = ["/dev/block/bootdevice/by-name", "/dev/block/by-name",
                "/dev/block/platform/*/by-name", "/dev/block/platform/*/*/by-name"]
 ESP_NAMES = ("esp", "winesp", "win_esp", "efi", "uefi_esp")
 WIN_NAMES = ("win", "windows", "winos", "win_os", "winpe")
+NEEDS_RERUN = False      # set when partitions were created and the install must be run again
 WORK = "/data/local/tmp/woa-install"            # on the device
 TOOLS_REPO = "0xSelenicDove/woa-installer"      # releases carry phone-tools-aarch64.tar.gz
 TOOLS_ASSET = "phone-tools-aarch64.tar.gz"
@@ -1168,6 +1169,8 @@ def main(argv=None):
                            "--esp-part / --win-part." % listing)
             step("2b/6", "Creating the ESP and Windows partitions")
             if create_partitions(ph, tools):
+                global NEEDS_RERUN
+                NEEDS_RERUN = True
                 say("\nThe device is rebooting. If data was erased, finish Android setup, enable USB")
                 say("debugging, make sure root works (reinstall Magisk if needed), then run this")
                 say("installer again WITHOUT --create-partitions.")

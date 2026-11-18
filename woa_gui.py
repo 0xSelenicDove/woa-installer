@@ -115,8 +115,8 @@ class Wizard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("WOA Installer")
-        self.geometry("980x660")
-        self.minsize(900, 620)
+        self.geometry("980x720")
+        self.minsize(900, 600)
         self.configure(bg=C["bg"])
         base = tkfont.nametofont("TkDefaultFont")
         base.configure(size=12)
@@ -162,8 +162,29 @@ class Wizard(tk.Tk):
         right.pack(side="left", fill="both", expand=True)
         self.foot = tk.Frame(right, bg=C["bg"])
         self.foot.pack(side="bottom", fill="x", padx=36, pady=22)
-        self.body = tk.Frame(right, bg=C["bg"])
-        self.body.pack(fill="both", expand=True, padx=36, pady=(30, 0))
+        self.canvas = tk.Canvas(right, bg=C["bg"], highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True, padx=(36, 20), pady=(30, 0))
+        self.body = tk.Frame(self.canvas, bg=C["bg"])
+        self._win = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind("<Configure>", lambda e: self._fit())
+        self.canvas.bind("<Configure>", lambda e: (self.canvas.itemconfigure(self._win, width=e.width), self._fit()))
+        for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind_all(ev, self._wheel)
+
+    def _fit(self):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        if self.body.winfo_reqheight() <= self.canvas.winfo_height():
+            self.canvas.yview_moveto(0)
+
+    def _wheel(self, e):
+        if self.body.winfo_reqheight() <= self.canvas.winfo_height():
+            return
+        if isinstance(e.widget, (tk.Text, ttk.Combobox)):      # let those handle their own scrolling
+            return
+        step = -1 if (e.num == 4 or e.delta > 0) else 1
+        if sys.platform == "darwin" and e.delta:
+            step = -int(e.delta)
+        self.canvas.yview_scroll(step, "units")
 
     def _stepper(self):
         for i, (dot, lbl) in enumerate(self.step_rows):
@@ -851,9 +872,11 @@ class Wizard(tk.Tk):
     def _worker(self, argv):
         w.PROMPT = self._prompt_from_thread
         res = ("ok", "")
+        w.NEEDS_RERUN = False
         try:
             with contextlib.redirect_stdout(LogWriter(self.q)):
                 w.main(argv)
+            self.s["rerun"] = w.NEEDS_RERUN
         except w.Fail as e:
             res = ("fail", str(e))
         except SystemExit:
@@ -875,8 +898,6 @@ class Wizard(tk.Tk):
                     lines = [x for x in p.replace("\r", "\n").split("\n") if x.strip()]
                     if lines and self.page == 6:
                         self.status.configure(text=lines[-1].strip()[:110])
-                    if "installer again" in p:
-                        self.s["rerun"] = True
                 elif kind == "prompt":
                     msg, box = p
                     box["answer"] = PromptDialog(self, msg).result
