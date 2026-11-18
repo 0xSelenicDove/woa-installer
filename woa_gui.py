@@ -130,7 +130,7 @@ class Wizard(tk.Tk):
         self.q = queue.Queue()
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
                       dry=True, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
-                      host="WOA-DEVICE", lang="", locale="", tz="", drivers="", iso_info=None,
+                      host="WOA-DEVICE", lang="", locale="", tz="", drivers="", iso_info=None, edition=None,
                       job=-1, log="", result=None, rerun=False)
         self.page = 0
         self.logbox = None
@@ -328,7 +328,25 @@ class Wizard(tk.Tk):
         self.iso_lbl = tk.Label(iso, bg=C["card"], fg=C["muted"], anchor="w", wraplength=520,
                                 justify="left")
         self.iso_lbl.pack(fill="x", padx=20)
-        Btn(iso, "Choose ISO…", self._pick_iso, "secondary").pack(anchor="w", padx=20, pady=12)
+        self.iso_stat = tk.Label(iso, bg=C["card"], fg=C["muted"], anchor="w", wraplength=560, justify="left")
+        self.iso_stat.pack(fill="x", padx=20, pady=(4, 0))
+        Btn(iso, "Choose ISO…", self._pick_iso, "secondary").pack(anchor="w", padx=20, pady=(12, 8))
+        if isinstance(self.s["iso_info"], dict):
+            arm = self.s["iso_info"]["arm_images"]
+            one = len(arm) == 1
+            row = tk.Frame(iso, bg=C["card"])
+            row.pack(fill="x", padx=20, pady=(0, 14))
+            tk.Label(row, text="Edition" + ("  ·  only one in this image" if one else ""), bg=C["card"],
+                     fg=C["text"], anchor="w").pack(anchor="w")
+            self._ed_map = {"%s (build %s)" % (i["name"], i["build"]): i["index"] for i in arm}
+            cur = [k for k, v in self._ed_map.items() if v == self.s["edition"]]
+            self.ed_v = tk.StringVar(value=cur[0] if cur else "")
+            cb = ttk.Combobox(row, textvariable=self.ed_v, values=list(self._ed_map), width=46,
+                              state="disabled" if one else "readonly")
+            cb.pack(anchor="w", pady=(4, 0))
+            cb.bind("<<ComboboxSelected>>", self._edition_changed)
+        else:
+            tk.Frame(iso, height=4, bg=C["card"]).pack()
         tk.Frame(self.body, height=14, bg=C["bg"]).pack()
         uefi = card(self.body)
         uefi.pack(fill="x")
@@ -344,6 +362,20 @@ class Wizard(tk.Tk):
             Btn(bar, "Use latest release", self._auto_uefi, "secondary").pack(side="left", padx=8)
         self._files_refresh()
         self.nav(back=lambda: self.show(1), nxt=lambda: self.show(3), nxt_ok=self._files_ok())
+
+    def _img(self):
+        """The selected edition's image record (name, languages, ...) or None."""
+        info = self.s["iso_info"]
+        if not isinstance(info, dict):
+            return None
+        for i in info["arm_images"]:
+            if i["index"] == self.s["edition"]:
+                return i
+        return info["image"]
+
+    @staticmethod
+    def _img_langs(img):
+        return img["langs"] or ([img["default_lang"]] if img["default_lang"] else ["en-US"])
 
     def _auto_ok(self):
         i = self.s["info"]
@@ -378,15 +410,15 @@ class Wizard(tk.Tk):
         if not ok:
             self.iso_lbl.configure(text="No file chosen", fg=C["muted"])
         else:
-            head = "%s  (%s)" % (Path(iso).name, w.human(Path(iso).stat().st_size))
+            self.iso_lbl.configure(text="%s  (%s)" % (Path(iso).name, w.human(Path(iso).stat().st_size)),
+                                   fg=C["muted"])
             if info == "busy":
-                self.iso_lbl.configure(text=head + "\nReading the image…", fg=C["muted"])
+                self.iso_stat.configure(text="Reading the image…", fg=C["muted"])
             elif isinstance(info, dict):
-                img = info["image"]
-                langs = ", ".join(data.locale_label(t) for t in info["langs"])
-                self.iso_lbl.configure(text="%s\n✓ %s · ARM64 · %s" % (head, img["name"], langs), fg=C["ok"])
+                langs = ", ".join(data.locale_label(t) for t in self._img_langs(self._img()))
+                self.iso_stat.configure(text="✓ ARM64 · " + langs, fg=C["ok"])
             elif isinstance(info, tuple):
-                self.iso_lbl.configure(text="%s\n✕ %s" % (head, info[1]), fg=C["err"])
+                self.iso_stat.configure(text="✕ " + info[1], fg=C["err"])
         z = self.s["uefi"]
         if z:
             bad = self._zip_problem()
@@ -414,6 +446,12 @@ class Wizard(tk.Tk):
                     res = ("err", "Could not read the image: %r" % e)
                 self.q.put(("iso", (f, res)))
             threading.Thread(target=work, daemon=True).start()
+
+    def _edition_changed(self, _=None):
+        idx = self._ed_map.get(self.ed_v.get())
+        if idx and idx != self.s["edition"]:
+            self.s.update(edition=idx, lang="", locale="")     # languages differ per edition
+            self.show(2)
 
     def _pick_uefi(self):
         f = filedialog.askopenfilename(title="UEFI installer zip", filetypes=[("Zip", "*.zip")])
@@ -480,10 +518,10 @@ class Wizard(tk.Tk):
         self.setup_card = card(self.body)
         form = tk.Frame(self.setup_card, bg=C["card"])
         form.pack(fill="x", padx=20, pady=14)
-        info = self.s["iso_info"] if isinstance(self.s["iso_info"], dict) else None
-        langs = info["langs"] if info else ["en-US"]
+        img = self._img()
+        langs = self._img_langs(img) if img else ["en-US"]
         if not self.s["lang"]:
-            self.s["lang"] = info["default_lang"] if info else "en-US"
+            self.s["lang"] = (img["default_lang"] or langs[0]) if img else "en-US"
         if not self.s["locale"]:
             self.s["locale"] = self.s["lang"] if self.s["lang"] in data.LOCALES else "en-US"
         if not self.s["tz"]:
@@ -566,12 +604,13 @@ class Wizard(tk.Tk):
         c = card(self.body)
         c.pack(fill="x")
         items = ["Back up the boot image of your %s" % (i["model"] or i["device"])]
+        img = self._img()
         if self.s["create"]:
             items += ["Create the ESP and Windows partitions",
                       "Restart the device, then you run this guide again to install Windows"]
         else:
             items += ["Format the ESP and Windows partitions",
-                      "Copy Windows from your ISO to the device"
+                      "Copy %s from your ISO to the device" % (img["name"] if img else "Windows")
                       + (", set up to start straight at the desktop" if self.s["oobe"] else ""),
                       "Install the UEFI boot loader in the other slot",
                       "Restart the device into Windows"]
@@ -674,7 +713,7 @@ class Wizard(tk.Tk):
         if s["uefi"]:
             a += ["--uefi-zip", s["uefi"]]
         if isinstance(s["iso_info"], dict):
-            a += ["--image-index", str(s["iso_info"]["image"]["index"])]
+            a += ["--image-index", str(s["edition"])]
         if s["dry"]:
             a.append("--dry-run")
         if s["create"]:
@@ -742,6 +781,7 @@ class Wizard(tk.Tk):
                     if path == self.s["iso"]:
                         self.s["iso_info"] = res
                         if isinstance(res, dict):
+                            self.s["edition"] = res["image"]["index"]
                             lang = res["default_lang"]
                             self.s["lang"] = lang
                             self.s["locale"] = lang if lang in data.LOCALES else "en-US"

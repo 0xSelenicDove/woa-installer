@@ -595,7 +595,8 @@ def read_iso_info(iso, index=None):
         images = list_images(tools, find_wim(mp))
         img = pick_image(images, index)
     langs = img["langs"] or ([img["default_lang"]] if img["default_lang"] else [])
-    return {"images": images, "image": img, "langs": langs,
+    arm = [i for i in images if i["arch"].lower() in ("arm64", "aarch64")]
+    return {"images": images, "arm_images": arm, "image": img, "langs": langs,
             "default_lang": img["default_lang"] or (langs[0] if langs else "en-US")}
 
 

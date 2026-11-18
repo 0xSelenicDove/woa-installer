@@ -42,7 +42,7 @@ By default the installer writes an `unattend.xml` into the Windows image so the 
 * creates a local administrator (`--user`, `--password`, default `user` / blank) and signs in automatically, straight to the desktop;
 * skips the network, Microsoft-account, EULA and privacy screens (`BypassNRO`, `DisablePrivacyExperience`, `ProtectYourPC=3`, hidden online-account and wireless pages);
 * turns off first-logon animation, consumer extras and automatic BitLocker device encryption;
-* sets the device name, display language, region & format and time zone (`--hostname`, `--language`, `--locale`, `--timezone`). The display language must exist in the image; the wizard reads the image's languages and disables the Language picker when there is only one. Region & format (dates, numbers, keyboard) is a separate picker, and the time zone is a list of Windows time zone names (the host's, when running on Windows).
+* sets the device name, display language, region & format and time zone (`--hostname`, `--language`, `--locale`, `--timezone`). The display language must exist in the image; the wizard reads the image's editions and languages: an Edition picker (multi-version ISOs) and a Language picker, each disabled when the image offers only one choice. Region & format (dates, numbers, keyboard) is a separate picker, and the time zone is a list of Windows time zone names (the host's, when running on Windows).
 
 `--drivers DIR` copies a folder of `.inf` drivers (e.g. WiFi) to `C:\Drivers` and installs them at first logon with `pnputil`. `--no-unattend` turns all of this off. The password is stored in plain text in the install files, so use a throwaway one. This is not yet verified on a real boot; `tests/test_unattend.py` checks the generated XML.
 
