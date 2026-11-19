@@ -1026,10 +1026,17 @@ class Wizard(tk.Tk):
             self.nav(nxt=self.destroy, nxt_text="Close")
         elif kind == "ok":
             self.title_("All done", "Windows is installed.")
-            self.callout(self.body, "The device is restarting into Windows. The first boot runs Windows "
+            lead = ("The device was not restarted. When you are ready, switch to the other slot "
+                    "(fastboot set_active <other slot>, then fastboot reboot). "
+                    if self.s["noreboot"] else "The device is restarting into Windows. ")
+            self.callout(self.body, lead + "The first boot runs Windows "
                          "setup and can take several minutes"
                          + (" and then signs in as “%s” automatically" % self.s["user"] if self.s["oobe"] else "")
                          + ". To return to Android, open the Boot Manager and pick “Reboot to other slot”.", "ok").pack(fill="x")
+            self.callout(self.body, "On some devices Windows ends a restart or shutdown on a blue screen "
+                         "(INTERNAL_POWER_ERROR) at the very last step. That is a firmware issue, not a failed "
+                         "install: hold the power button to restart, and setup carries on.", "warn"
+                         ).pack(fill="x", pady=(10, 0))
             self.nav(nxt=self.destroy, nxt_text="Close")
         else:
             self.title_("Something went wrong", "Nothing further was changed after this point.")

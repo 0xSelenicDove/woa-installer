@@ -403,3 +403,47 @@ def build_bcd(template, description="Windows 11 ARM64", locale="en-US"):
         h.add_value(desc, name, vtype, data)
     return h.to_bytes()
 
+
+def validate_bcd(data):
+    """Problems that would stop Windows from using this BCD, as a list of strings (empty = fine).
+
+    Checks what a real boot needs: a readable registry hive, the system-store markers (setup's
+    BCD step refuses a store without them), a boot manager whose default entry exists and is
+    a Windows loader that knows where winload.efi and Windows are."""
+    problems = []
+    try:
+        h = Hive(data)
+        objects = h.find("Objects")
+        desc = h.find("Description")
+    except (HiveError, struct.error, IndexError, ValueError) as e:
+        return ["not a readable BCD registry hive (%s)" % e]
+    try:
+        key = h.get_value(desc, "KeyName")[1].decode("utf-16le").rstrip("\0")
+        if not key.startswith("BCD"):
+            problems.append("Description\\KeyName is not BCD00000000")
+    except (HiveError, KeyError, TypeError, UnicodeDecodeError):
+        problems.append("Description\\KeyName is missing")
+    for name in ("System", "TreatAsSystem"):
+        try:
+            if h.get_value(desc, name)[1] != struct.pack("<I", 1):
+                problems.append("Description\\%s is not 1" % name)
+        except (HiveError, KeyError, TypeError):
+            problems.append("Description\\%s is missing (setup would say 'not system store')" % name)
+    mgr = h.child(objects, BOOTMGR)
+    if mgr is None:
+        return problems + ["no Windows Boot Manager entry"]
+    try:
+        default = h.get_value(h.child(h.child(mgr, "Elements"), "23000003"), "Element")[1]
+        default = default.decode("utf-16le").rstrip("\0")
+    except (HiveError, KeyError, TypeError, AttributeError, UnicodeDecodeError):
+        return problems + ["the boot manager has no default entry"]
+    loader = h.child(objects, default.lower()) or h.child(objects, default)
+    if loader is None:
+        return problems + ["the default entry %s does not exist" % default]
+    els = h.child(loader, "Elements")
+    for eid, what in (("12000002", "winload.efi path"), ("11000001", "boot device"),
+                      ("21000001", "Windows device")):
+        if els is None or h.child(els, eid) is None:
+            problems.append("the default entry has no %s (element %s)" % (what, eid))
+    return problems
+

@@ -964,13 +964,18 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp, tree=None, description="Windows 11 ARM
         p = Path(arg)
         if not p.is_file():
             raise Fail("BCD not found: %s" % p)
+        bad = woa_bcd.validate_bcd(p.read_bytes())
+        if bad:
+            say("  WARNING: this BCD may not boot Windows: " + "; ".join(bad))
         return p
     tpl = Path(tree) / "Windows" / "System32" / "config" / "BCD-Template" if tree else None
     if tpl and tpl.is_file():
         try:
             data = woa_bcd.build_bcd(tpl.read_bytes(), description,
                                      (ARGS.language or ARGS.locale or "en-US"))
-            woa_bcd.Hive(data).find("Objects")                    # parses back
+            bad = woa_bcd.validate_bcd(data)
+            if bad:
+                raise woa_bcd.HiveError("; ".join(bad))
         except (woa_bcd.HiveError, struct.error, IndexError, ValueError) as e:
             say("  could not build a BCD from the image's template (%s); looking for another" % e)
         else:
@@ -1344,6 +1349,9 @@ def main(argv=None):
         switch_to_uefi(ph, tools)
         say("\nDone. The device is rebooting into UEFI/Windows.")
         say("First boot runs Windows setup and can take several minutes.")
+    say("Note: on some devices Windows ends a restart or shutdown on a blue screen")
+    say("(INTERNAL_POWER_ERROR) at the very last step. That is a firmware issue, not a")
+    say("failed install: hold the power button to restart; setup carries on afterwards.")
     if ph.slot:
         say("Back to Android any time: Boot Manager -> 'Reboot to other slot', or")
         say("  fastboot set_active %s && fastboot reboot" % ph.slot[1:])

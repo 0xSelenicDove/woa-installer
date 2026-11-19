@@ -60,9 +60,9 @@ Android has no NTFS-3G, so the installer pushes static aarch64 `mkntfs`, `ntfs-3
 
 ## BCD (boot configuration)
 
-A normal Windows install runs `bcdboot`, which builds `\EFI\Microsoft\Boot\BCD` from the `BCD-Template` inside the image. macOS cannot run `bcdboot`, so `woa_bcd.py` repeats its steps by editing the template registry hive directly: it removes the Setup-only entries, adds the Windows loader and resume entries (partition-independent "locate" devices, with the optimal settings from the main repo's *Optimal BCD Configuration*: testsigning, nointegritychecks, hypervisor/VSM off, ...) and points the boot manager at them. The device values are byte-identical to a BCD that boots Windows on a real device, and the result is validated with an independent structural check and `hivex`. **It has not been booted yet.**
+A normal Windows install runs `bcdboot`, which builds `\EFI\Microsoft\Boot\BCD` from the `BCD-Template` inside the image. macOS cannot run `bcdboot`, so `woa_bcd.py` repeats its steps by editing the template registry hive directly: it removes the Setup-only entries, adds the Windows loader and resume entries (partition-independent "locate" devices, with the optimal settings from the main repo's *Optimal BCD Configuration*: testsigning, nointegritychecks, hypervisor/VSM off, ...) and points the boot manager at them. The device values are byte-identical to a BCD that boots Windows on a real device. The store is also marked as the *system store* (`Description\KeyName=BCD00000000`, `System=1`, `TreatAsSystem=1`) as `bcdboot` does. Without that mark Windows still boots, but its first-boot setup fails with "File is not system store" (0xC0000098) and reports that it "could not configure Windows to run on this computer's hardware". The result is checked by `woa_bcd.validate_bcd` during the pre-check, before anything is written, and independently with `hivex`. **It booted Windows to the desktop on a Redmi K40S / POCO F4 (`munch`).**
 
-`--bcd FILE` (or the wizard's BCD picker) overrides it with your own hive. If the image has no template, the BCD already on the device's ESP is reused.
+`--bcd FILE` (or the wizard's BCD picker) overrides it with your own hive, with a warning if it lacks what a boot needs. If the image has no template, the BCD already on the device's ESP is reused.
 
 ## What is verified
 
@@ -79,4 +79,11 @@ A normal Windows install runs `bcdboot`, which builds `\EFI\Microsoft\Boot\BCD` 
 
 ## Status
 
-Not yet run against a real device, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/` check the GPT editor, unattend.xml, repo parsing, checksums and the BCD builder (set `WOA_BCD_TEMPLATE` to the image's `BCD-Template` for the hive tests). Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Run `--pre-check` first.
+Tested end to end, from the wizard, on one device: a Redmi K40S / POCO F4 (`munch`, 12 GB, Magisk root, 4096-byte sectors) with an ARM64 Windows 11 IoT Enterprise LTSC 2024 ISO. The install ran, Windows setup finished unattended, signed in automatically and reached the desktop. Other devices and images are untested, so run `--pre-check` first.
+
+Things worth knowing:
+* **Copy speed vs. memory:** the Windows tree is streamed in chunks (a quarter of the device's free memory, 32-512 MB), with a `sync` between them. One long stream lets `adbd` queue the whole copy in RAM, which crashed the test phone after about 9 GB.
+* **Blue screen at shutdown:** on `munch`, Windows ends every restart and shutdown with `INTERNAL_POWER_ERROR` at the very last step. It is a firmware issue, not a failed install: hold the power button to restart and setup carries on.
+* **Failed first boot:** if first-boot setup fails once, Windows records it and later boots keep failing ("restart the installation"). Patching that state did not recover; reinstalling does.
+
+`tests/` check the GPT editor, unattend.xml, repo parsing, checksums, the chunked streaming and the BCD builder and validator (set `WOA_BCD_TEMPLATE` to the image's `BCD-Template` for the hive tests). Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done.

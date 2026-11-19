@@ -126,4 +126,15 @@ try:
     raise SystemExit("garbage accepted")
 except (b.HiveError, struct.error, IndexError):
     pass
+
+assert b.validate_bcd(out) == [] and b.validate_bcd(out2) == []          # what we build passes
+bad = b.validate_bcd(template)                                           # the raw template is not bootable
+assert any("System" in p or "KeyName" in p for p in bad), bad
+assert b.validate_bcd(b"not a hive") and b.validate_bcd(b"regf" + b"\0" * 8192)
+h2 = b.Hive(out)                                                         # default entry pointing nowhere
+mgr2 = h2.child(h2.find("Objects"), b.BOOTMGR)
+e2 = h2.child(h2.child(mgr2, "Elements"), "23000003")
+h2.delete_value(e2, "Element")
+h2.add_value(e2, "Element", b.REG_SZ, b._utf16z("{00000000-1111-2222-3333-444444444444}"))
+assert any("does not exist" in p for p in b.validate_bcd(h2.to_bytes()))
 print("BCD hive OK (%d -> %d bytes, loader %s)" % (len(template), len(out), h.name(loaders[0])))
