@@ -55,6 +55,7 @@ def is_dark():
 C = DARK if is_dark() else LIGHT
 STEPS = ["Welcome", "Device", "Files", "Storage", "Setup", "Review", "Pre-check", "Install", "Done"]
 REVIEW, PRECHECK, INSTALL, DONE = 5, 6, 7, 8
+PX = dict(base=16, small=15, h=19, title=32, box=20, mono=15)   # font pixel sizes
 JOBS = ["Check the device", "Prepare UEFI & partitions", "Back up boot image",
         "Read Windows ISO", "Write Windows", "Install UEFI"]
 
@@ -88,7 +89,7 @@ class Check(tk.Frame):
         bg = bg or C["card"]
         super().__init__(parent, bg=bg, cursor="hand2")
         self.var, self.cmd = var, command
-        self.box = tk.Label(self, bg=bg, fg=C["accent"], font=("TkDefaultFont", 15))
+        self.box = tk.Label(self, bg=bg, fg=C["accent"], font=("TkDefaultFont", -PX["box"]))
         self.box.pack(side="left")
         self.lbl = tk.Label(self, text=text, bg=bg, fg=C["text"], justify="left", anchor="w",
                             wraplength=520)
@@ -116,17 +117,29 @@ class Wizard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("WOA Installer")
-        self.geometry("980x720")
-        self.minsize(900, 600)
+        self.geometry("980x780")
+        self.minsize(900, 640)
         self.configure(bg=C["bg"])
+        # Sizes are in PIXELS (negative = pixels in Tk). Point sizes are converted with the Tk
+        # version's own scaling (Tk 9 = 1.33, Tk 8.x = 1.0), which made packaged builds render ~25%
+        # smaller than a source run. Pixel sizes look the same everywhere.
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont",
+                     "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"):
+            try:
+                tkfont.nametofont(name).configure(size=-PX["base"])
+            except tk.TclError:
+                pass
+        try:
+            tkfont.nametofont("TkFixedFont").configure(size=-PX["mono"])
+        except tk.TclError:
+            pass
         base = tkfont.nametofont("TkDefaultFont")
-        base.configure(size=12)
         fam = base.cget("family")
-        self.f_title = tkfont.Font(family=fam, size=24, weight="bold")
-        self.f_h = tkfont.Font(family=fam, size=14, weight="bold")
-        self.f_small = tkfont.Font(family=fam, size=11)
-        self.f_mono = tkfont.Font(family="Menlo" if sys.platform == "darwin" else "Consolas", size=11)
-        self.f_bold = tkfont.Font(family=fam, size=12, weight="bold")
+        self.f_title = tkfont.Font(family=fam, size=-PX["title"], weight="bold")
+        self.f_h = tkfont.Font(family=fam, size=-PX["h"], weight="bold")
+        self.f_small = tkfont.Font(family=fam, size=-PX["small"])
+        self.f_mono = tkfont.Font(family="Menlo" if sys.platform == "darwin" else "Consolas", size=-PX["mono"])
+        self.f_bold = tkfont.Font(family=fam, size=-PX["base"], weight="bold")
         self.f_base = base
         self.q = queue.Queue()
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
@@ -1053,7 +1066,7 @@ class PromptDialog(tk.Toplevel):
         body = tk.Frame(self, bg=C["bg"], padx=26, pady=22)
         body.pack()
         tk.Label(body, text="Please confirm", bg=C["bg"], fg=C["text"],
-                 font=("TkDefaultFont", 15, "bold"), anchor="w").pack(fill="x")
+                 font=("TkDefaultFont", -PX["box"], "bold"), anchor="w").pack(fill="x")
         tk.Label(body, text=text.rstrip(": "), bg=C["bg"], fg=C["text"], justify="left",
                  wraplength=420, anchor="w").pack(fill="x", pady=12)
         self.entry = None
