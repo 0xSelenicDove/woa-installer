@@ -54,7 +54,8 @@ BYNAME_DIRS = ["/dev/block/bootdevice/by-name", "/dev/block/by-name",
 ESP_NAMES = ("esp", "winesp", "win_esp", "efi", "uefi_esp")
 WIN_NAMES = ("win", "windows", "winos", "win_os", "winpe")
 NEEDS_RERUN = False      # set when partitions were created and the install must be run again
-WORK = "/data/local/tmp/woa-install"            # on the device
+WORK = "/data/local/tmp/woa-install"
+STREAM_CHUNK = 96 * 1024 * 1024  # bytes per `tar -x` on the device (bounds adbd memory)
 TOOLS_REPO = "0xSelenicDove/woa-installer"      # releases carry phone-tools-aarch64.tar.gz
 TOOLS_ASSET = "phone-tools-aarch64.tar.gz"
 PHONE_TOOLS = ("mkntfs", "ntfs-3g", "mkfs.fat")  # static aarch64 binaries, see phone-tools/
@@ -827,7 +828,6 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
     if ph.dry:
         say("  [pre-check] would stream to " + dest_cmd_dir)
         return
-    proc = ph.stream_in("tar -x -C %s" % dest_cmd_dir)
     done = [0, 0.0]
 
     def flt(ti):
@@ -836,25 +836,59 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
         ti.mode = 0o755 if ti.isdir() else 0o644
         return ti
 
-    class Counting:
-        def write(self, b):
-            proc.stdin.write(b)
-            done[0] += len(b)
-            if time.time() - done[1] > 2:
-                done[1] = time.time()
-                print("\r  %s / %s" % (human(done[0]), human(total)), end="", flush=True)
-            return len(b)
+    def entries():
+        for root, dirs, fs in os.walk(src):
+            dirs.sort()
+            rel = os.path.relpath(root, src)
+            if rel != ".":
+                yield os.path.join(root, ""), rel
+            for f in sorted(fs):
+                yield os.path.join(root, f), os.path.normpath(os.path.join(rel, f))
 
-    try:
-        with tarfile.open(fileobj=Counting(), mode="w|", format=tarfile.GNU_FORMAT) as tf:
-            for name in sorted(os.listdir(src)):
-                tf.add(os.path.join(src, name), arcname=name, filter=flt)
-    except BrokenPipeError:
-        pass
-    proc.stdin.close()
-    err = proc.stderr.read().decode(errors="replace")
-    if proc.wait() != 0:
-        raise Fail("tar on the device failed: " + err)
+    # The device cannot absorb the stream as fast as the PC sends it: adbd queues the
+    # difference in RAM (a single 18 GB `tar` grew it past 12 GB and crashed the device).
+    # So send in bounded chunks, one `tar -x` per chunk, and `sync` between them.
+    state = {"proc": None, "tf": None, "sent": 0}
+
+    def open_chunk():
+        proc = ph.stream_in("tar -x -C %s" % dest_cmd_dir)
+
+        class Counting:
+            def write(self, b):
+                proc.stdin.write(b)
+                done[0] += len(b)
+                if time.time() - done[1] > 2:
+                    done[1] = time.time()
+                    print("\r  %s / %s" % (human(done[0]), human(total)), end="", flush=True)
+                return len(b)
+
+        state.update(proc=proc, sent=0,
+                     tf=tarfile.open(fileobj=Counting(), mode="w|", format=tarfile.GNU_FORMAT))
+
+    def close_chunk():
+        proc, tf = state["proc"], state["tf"]
+        if proc is None:
+            return
+        try:
+            tf.close()
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        err = proc.stderr.read().decode(errors="replace")
+        if proc.wait() != 0:
+            raise Fail("tar on the device failed: " + err)
+        ph.su("sync", check=False)
+        state["proc"] = None
+
+    for path, arc in entries():
+        if state["proc"] is None:
+            open_chunk()
+        state["tf"].add(path.rstrip(os.sep), arcname=arc, recursive=False, filter=flt)
+        if not os.path.isdir(path.rstrip(os.sep)) and not os.path.islink(path.rstrip(os.sep)):
+            state["sent"] += os.path.getsize(path)
+        if state["sent"] >= STREAM_CHUNK:
+            close_chunk()
+    close_chunk()
     print()
 
 
