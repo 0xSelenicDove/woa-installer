@@ -55,7 +55,8 @@ ESP_NAMES = ("esp", "winesp", "win_esp", "efi", "uefi_esp")
 WIN_NAMES = ("win", "windows", "winos", "win_os", "winpe")
 NEEDS_RERUN = False      # set when partitions were created and the install must be run again
 WORK = "/data/local/tmp/woa-install"
-STREAM_CHUNK = 512 * 1024 * 1024  # bytes per `tar -x` on the device (bounds adbd memory)
+STREAM_CHUNK = 512 * 1024 * 1024  # max bytes per `tar -x` on the device (bounds adbd memory)
+STREAM_CHUNK_MIN = 32 * 1024 * 1024
 TOOLS_REPO = "0xSelenicDove/woa-installer"      # releases carry phone-tools-aarch64.tar.gz
 TOOLS_ASSET = "phone-tools-aarch64.tar.gz"
 PHONE_TOOLS = ("mkntfs", "ntfs-3g", "mkfs.fat")  # static aarch64 binaries, see phone-tools/
@@ -814,6 +815,15 @@ def format_partitions(ph, parts, tl):
     ph.su("%s -f -F -L Windows %s" % (ntfs, parts["Windows"][0]), mutating=True)
 
 
+def chunk_size(ph):
+    """Bytes per `tar -x` run: a quarter of the device's free memory, within 32 MB..STREAM_CHUNK."""
+    try:
+        kb = int(ph.su("grep MemAvailable /proc/meminfo", check=False).split()[1])
+    except (IndexError, ValueError):
+        return STREAM_CHUNK
+    return max(STREAM_CHUNK_MIN, min(STREAM_CHUNK, kb * 1024 // 4))
+
+
 def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
     """tar `src` straight into `su tar -x` on the device."""
     files = total = 0
@@ -848,7 +858,7 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
     # The device cannot absorb the stream as fast as the PC sends it: adbd queues the
     # difference in RAM (a single 18 GB `tar` grew it past 12 GB and crashed the device).
     # So send in bounded chunks, one `tar -x` per chunk, and `sync` between them.
-    state = {"proc": None, "tf": None, "sent": 0}
+    state = {"proc": None, "tf": None, "sent": 0, "limit": STREAM_CHUNK}
 
     def open_chunk():
         proc = ph.stream_in("tar -x -C %s" % dest_cmd_dir)
@@ -862,7 +872,7 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
                     print("\r  %s / %s" % (human(done[0]), human(total)), end="", flush=True)
                 return len(b)
 
-        state.update(proc=proc, sent=0,
+        state.update(proc=proc, sent=0, limit=chunk_size(ph),
                      tf=tarfile.open(fileobj=Counting(), mode="w|", format=tarfile.GNU_FORMAT))
 
     def close_chunk():
@@ -886,7 +896,7 @@ def stream_tree(ph, src, dest_cmd_dir, label, esp=False):
         state["tf"].add(path.rstrip(os.sep), arcname=arc, recursive=False, filter=flt)
         if not os.path.isdir(path.rstrip(os.sep)) and not os.path.islink(path.rstrip(os.sep)):
             state["sent"] += os.path.getsize(path)
-        if state["sent"] >= STREAM_CHUNK:
+        if state["sent"] >= state["limit"]:
             close_chunk()
     close_chunk()
     print()

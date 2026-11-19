@@ -16,13 +16,30 @@ class FakePhone:
         self.procs += 1
         return subprocess.Popen(cmd.split(), stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    meminfo = ""
+
     def su(self, cmd, check=True, mutating=False):
         if cmd == "sync":
             self.syncs += 1
+        if "MemAvailable" in cmd:
+            return self.meminfo
         return ""
 
 
+def check_chunk_size():
+    ph = FakePhone()
+    ph.meminfo = "MemAvailable:    9583244 kB"
+    assert w.chunk_size(ph) == w.STREAM_CHUNK                    # plenty of RAM: the cap
+    ph.meminfo = "MemAvailable:    1048576 kB"
+    assert w.chunk_size(ph) == 256 * 1024 * 1024                 # a quarter of free RAM
+    ph.meminfo = "MemAvailable:      40000 kB"
+    assert w.chunk_size(ph) == w.STREAM_CHUNK_MIN                # never below the floor
+    ph.meminfo = "garbage"
+    assert w.chunk_size(ph) == w.STREAM_CHUNK                    # unreadable: the cap
+
+
 def main():
+    check_chunk_size()
     if sys.platform == "win32":
         print("stream test skipped (needs a POSIX tar)")
         return
