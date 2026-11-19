@@ -1101,7 +1101,11 @@ def install_uefi(ph, zip_path):
               mutating=True)
     ph.su("rm -rf %s/inst && mkdir -p %s/inst" % (WORK, WORK), mutating=True)
     if not ph.dry:
-        ph.adb("push", str(zip_path), WORK + "/uefi-installer.zip")
+        # WORK is root-owned (made through su), so adb's shell user cannot write into it:
+        # push to the shell-writable /data/local/tmp and let root move it into place.
+        stage = "/data/local/tmp/woa-uefi-installer.zip"
+        ph.adb("push", str(zip_path), stage)
+        ph.su("mv %s %s/uefi-installer.zip" % (stage, WORK))
     ph.su("unzip -o %s/uefi-installer.zip -d %s/inst" % (WORK, WORK), mutating=True)
     ph.su("chmod -R 755 %s/inst" % WORK, mutating=True)
     ub = WORK + "/inst/META-INF/com/google/android/update-binary"
