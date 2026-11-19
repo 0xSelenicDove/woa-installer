@@ -132,7 +132,7 @@ class Wizard(tk.Tk):
         self.s = dict(info=None, iso="", uefi="", create=False, esp="512M", win="64G",
                       dry=False, pc=None, nonab=False, noreboot=False, ack=False, oobe=True, user="user", pw="",
                       host="WOA-DEVICE", lang="", locale="", tz="", drivers="", iso_info=None, edition=None,
-                      repo="", repo_state=None, sha="",
+                      repo="", repo_state=None, sha="", bcd="",
                       job=-1, log="", result=None, rerun=False)
         self.page = 0
         self.logbox = self.job_rows = self.status = None
@@ -638,6 +638,17 @@ class Wizard(tk.Tk):
         self.oobe_v = tk.BooleanVar(value=self.s["oobe"])
         Check(self.body, "Skip the setup screens (recommended)", self.oobe_v, bg=C["bg"],
               command=self._setup_toggle).pack(anchor="w")
+        brow = tk.Frame(self.body, bg=C["bg"])
+        brow.pack(fill="x", pady=(12, 0))
+        tk.Label(brow, text="Boot configuration (BCD)", bg=C["bg"], fg=C["text"], anchor="w").pack(anchor="w")
+        tk.Label(brow, text="Optional. Only needed if the device's boot partition has none to reuse.",
+                 bg=C["bg"], fg=C["muted"], font=self.f_small, anchor="w").pack(anchor="w")
+        bbar = tk.Frame(brow, bg=C["bg"])
+        bbar.pack(anchor="w", pady=(6, 0))
+        Btn(bbar, "Choose…", self._pick_bcd, "secondary").pack(side="left")
+        self.bcd_lbl = tk.Label(bbar, text=Path(self.s["bcd"]).name if self.s["bcd"] else "None",
+                                bg=C["bg"], fg=C["muted"], font=self.f_small)
+        self.bcd_lbl.pack(side="left", padx=10)
         self.setup_card = card(self.body)
         form = tk.Frame(self.setup_card, bg=C["card"])
         form.pack(fill="x", padx=20, pady=14)
@@ -698,6 +709,22 @@ class Wizard(tk.Tk):
             self.setup_card.pack(fill="x", pady=14)
         else:
             self.setup_card.pack_forget()
+
+    def _pick_bcd(self):
+        f = filedialog.askopenfilename(title="BCD file (registry hive)")
+        if not f:
+            return
+        try:
+            with open(f, "rb") as fh:
+                ok = fh.read(4) == b"regf"
+        except OSError:
+            ok = False
+        if not ok:
+            self.setup_err.configure(text="That is not a BCD file (Windows registry hive).")
+            return
+        self.setup_err.configure(text="")
+        self.s["bcd"] = f
+        self.bcd_lbl.configure(text=Path(f).name)
 
     def _pick_drivers(self):
         d = filedialog.askdirectory(title="Folder with .inf drivers")
@@ -882,6 +909,8 @@ class Wizard(tk.Tk):
         if s["create"]:
             a += ["--create-partitions", "--esp-size", s["esp"], "--win-size", s["win"]]
         if not s["create"]:
+            if s["bcd"]:
+                a += ["--bcd", s["bcd"]]
             if s["oobe"]:
                 a += ["--user", s["user"], "--password", s["pw"], "--hostname", s["host"],
                       "--language", s["lang"], "--locale", s["locale"], "--timezone", s["tz"]]
