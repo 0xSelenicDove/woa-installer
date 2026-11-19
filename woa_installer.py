@@ -38,6 +38,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:            # also works under `python -I`
     sys.path.insert(0, str(HERE))
 from woa_data import TIMEZONES as WIN_TIMEZONES  # noqa: E402
+import woa_bcd  # noqa: E402
 CACHE = Path.home() / ".woa-installer"
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -909,16 +910,31 @@ def build_esp_tree(win_tree, bcd, esp_dir):
     shutil.copy2(bcd, dst / "BCD")
 
 
-def resolve_bcd(ph, arg, esp_dev, esp_mp):
+def resolve_bcd(ph, arg, esp_dev, esp_mp, tree=None, description="Windows 11 ARM64", workdir=None):
+    """The boot configuration for the ESP, in order of preference:
+    1. --bcd FILE (your own),
+    2. built from the BCD-Template inside the Windows image, the way `bcdboot` does in a normal
+       install (see woa_bcd.py),
+    3. the BCD already on the device's ESP."""
     if arg:
         p = Path(arg)
         if not p.is_file():
             raise Fail("BCD not found: %s" % p)
         return p
-    tpl = HERE / "assets" / "BCD"
-    if tpl.is_file():
-        return tpl
-    say("  no BCD template; trying to reuse the BCD already on the device's ESP")
+    tpl = Path(tree) / "Windows" / "System32" / "config" / "BCD-Template" if tree else None
+    if tpl and tpl.is_file():
+        try:
+            data = woa_bcd.build_bcd(tpl.read_bytes(), description,
+                                     (ARGS.language or ARGS.locale or "en-US"))
+            woa_bcd.Hive(data).find("Objects")                    # parses back
+        except (woa_bcd.HiveError, struct.error, IndexError, ValueError) as e:
+            say("  could not build a BCD from the image's template (%s); looking for another" % e)
+        else:
+            out = Path(workdir or tempfile.mkdtemp(prefix="woa-bcd-")) / "BCD"
+            out.write_bytes(data)
+            say("  built the boot configuration from the image's BCD-Template, as bcdboot does")
+            return out
+    say("  no BCD template in the image; trying to reuse the BCD already on the device's ESP")
     try:                # read-only, so it also runs during the pre-check
         ph.adb("shell", "su -c 'mkdir -p %s && umount %s 2>/dev/null; mount -t vfat -o ro %s %s'"
                % (esp_mp, esp_mp, esp_dev, esp_mp), check=False)
@@ -927,8 +943,8 @@ def resolve_bcd(ph, arg, esp_dev, esp_mp):
     old = esp_mp + "/EFI/Microsoft/Boot/BCD"
     if ph.su("[ -f %s ] && echo y" % old, check=False) != "y":
         raise Fail(
-            "No BCD available. Provide one with --bcd, drop it at assets/BCD, or install\n"
-            "Windows once so the ESP already has EFI/Microsoft/Boot/BCD.")
+            "No boot configuration (BCD) available: the image has no BCD-Template and the ESP "
+            "has no BCD to reuse. Provide one with --bcd.")
     out = CACHE / "backup" / ("BCD_%s_%s.bin" % (ph.dev or "device", time.strftime("%Y%m%d-%H%M%S")))
     out.parent.mkdir(parents=True, exist_ok=True)
     say("  saving the device's current BCD to %s" % out)
@@ -1100,7 +1116,7 @@ def build_parser():
     ap.add_argument("--force-device", action="store_true", help="skip the zip-vs-device name check")
     ap.add_argument("--allow-non-ab", action="store_true", help="allow devices without A/B slots (overwrites the only boot image)")
     ap.add_argument("--image-index", type=int, help="install.wim image index (default: Pro)")
-    ap.add_argument("--bcd", help="BCD hive for the ESP (default: assets/BCD or the device's existing one)")
+    ap.add_argument("--bcd", help="your own BCD hive for the ESP (default: built from the Windows image, like a normal install)")
     ap.add_argument("--esp-part", help="ESP partition: by-name label or sdXN (default: auto-detect)")
     ap.add_argument("--win-part", help="Windows partition: by-name label or sdXN (default: auto-detect)")
     ap.add_argument("--platform-tools", help="folder with adb/fastboot")
@@ -1214,11 +1230,16 @@ def main(argv=None):
                     raise Fail("aborted")
                 tree = tmp / "win"
                 tree.mkdir()
+                img_name = img["name"]
                 if ARGS.dry_run:
                     say("  [pre-check] extracting only Windows/Boot to test the ESP layout ...")
                     (tree / "Windows").mkdir()
                     run_stream([tools.wimlib, "extract", str(wim), str(img["index"]),
                                 "/Windows/Boot", "--dest-dir", str(tree / "Windows"), "--no-acls"])
+                    (tree / "Windows" / "System32" / "config").mkdir(parents=True)
+                    run_stream([tools.wimlib, "extract", str(wim), str(img["index"]),
+                                "/Windows/System32/config/BCD-Template", "--dest-dir",
+                                str(tree / "Windows" / "System32" / "config"), "--no-acls"])
                 else:
                     say("  extracting the image (this takes a while) ...")
                     run_stream([tools.wimlib, "apply", str(wim), str(img["index"]), str(tree),
@@ -1226,7 +1247,7 @@ def main(argv=None):
 
             step("5/6", "Writing Windows to the device")
             esp_mp, win_mp = WORK + "/esp", WORK + "/win"
-            bcd = resolve_bcd(ph, ARGS.bcd, parts["ESP"][0], esp_mp)
+            bcd = resolve_bcd(ph, ARGS.bcd, parts["ESP"][0], esp_mp, tree, img_name, tmp)
             if not ARGS.no_unattend:
                 xml = build_unattend(ARGS.user, ARGS.password, ARGS.hostname, ARGS.locale,
                                      ARGS.timezone, bool(ARGS.drivers), ARGS.language)

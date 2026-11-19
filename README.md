@@ -58,9 +58,11 @@ By default the installer writes an `unattend.xml` into the Windows image so the 
 
 Android has no NTFS-3G, so the installer pushes static aarch64 `mkntfs`, `ntfs-3g` and `mkfs.fat` if the device lacks them. They come from this repo's release asset `phone-tools-aarch64.tar.gz` (checksum-verified), built by `.github/workflows/phone-tools.yml` / `phone-tools/build.sh`, or from a folder via `--phone-tools DIR`. Both partitions are formatted fresh (NTFS quick-format with the device's sector size).
 
-## BCD
+## BCD (boot configuration)
 
-The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`). The installer uses, in order: `--bcd`, `assets/BCD`, or the BCD already on the device's ESP. Put a BCD with the settings from the main repo's *Optimal BCD Configuration* at `assets/BCD` for clean installs.
+A normal Windows install runs `bcdboot`, which builds `\EFI\Microsoft\Boot\BCD` from the `BCD-Template` inside the image. macOS cannot run `bcdboot`, so `woa_bcd.py` repeats its steps by editing the template registry hive directly: it removes the Setup-only entries, adds the Windows loader and resume entries (partition-independent "locate" devices, with the optimal settings from the main repo's *Optimal BCD Configuration*: testsigning, nointegritychecks, hypervisor/VSM off, ...) and points the boot manager at them. The device values are byte-identical to a BCD that boots Windows on a real device, and the result is validated with an independent structural check and `hivex`. **It has not been booted yet.**
+
+`--bcd FILE` (or the wizard's BCD picker) overrides it with your own hive. If the image has no template, the BCD already on the device's ESP is reused.
 
 ## What is verified
 
@@ -77,4 +79,4 @@ The Windows boot config is not generated on the PC (macOS cannot run `bcdboot`).
 
 ## Status
 
-Not yet run against a real device, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/test_gpt.py` checks the GPT editor offline. Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Run `--pre-check` first.
+Not yet run against a real device, and the phone-tools CI build has not been run yet (publish a `v*` tag to produce the release asset). `tests/` check the GPT editor, unattend.xml, repo parsing, checksums and the BCD builder (set `WOA_BCD_TEMPLATE` to the image's `BCD-Template` for the hive tests). Known limits: files are copied with `tar` (NTFS ACLs from the image are not preserved), and no Qualcomm driver injection is done. Run `--pre-check` first.

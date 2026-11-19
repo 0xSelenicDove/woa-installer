@@ -654,7 +654,7 @@ class Wizard(tk.Tk):
         brow = tk.Frame(self.body, bg=C["bg"])
         brow.pack(fill="x", pady=(12, 0))
         tk.Label(brow, text="Boot configuration (BCD)", bg=C["bg"], fg=C["text"], anchor="w").pack(anchor="w")
-        tk.Label(brow, text="Optional. Only needed if the device's boot partition has none to reuse.",
+        tk.Label(brow, text="Optional. By default it is built from the Windows image, like a normal install.",
                  bg=C["bg"], fg=C["muted"], font=self.f_small, anchor="w").pack(anchor="w")
         bbar = tk.Frame(brow, bg=C["bg"])
         bbar.pack(anchor="w", pady=(6, 0))

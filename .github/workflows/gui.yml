@@ -18,6 +18,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install pyinstaller
       - run: python tests/test_gpt.py
+      - run: python tests/test_bcd.py
       - run: pyinstaller --onefile --windowed --name woa-installer woa_gui.py
       - name: Package (macOS dmg)
         if: runner.os == 'macOS'
