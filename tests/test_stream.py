@@ -23,6 +23,9 @@ class FakePhone:
 
 
 def main():
+    if sys.platform == "win32":
+        print("stream test skipped (needs a POSIX tar)")
+        return
     with tempfile.TemporaryDirectory() as t:
         src, dst = Path(t, "src"), Path(t, "dst")
         dst.mkdir()
