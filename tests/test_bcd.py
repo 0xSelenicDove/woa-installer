@@ -114,8 +114,12 @@ assert lg.lower() == h.name(loaders[0]).lower(), "boot manager default"
 assert val(mgr, "24000001").decode("utf-16le").split("\0")[0].lower() == lg.lower(), "boot manager display order"
 assert val(mgr, "11000001") == GOOD_BOOT_DEVICE
 assert h.child(els(mgr), "45000001") is None and h.child(els(mgr), "47000006") is None, "template-class elements removed"
+desc = h.find("Description")                                 # marked as the system store (else spbcd.dll: 0xC0000098)
+assert h.get_value(desc, "KeyName")[1].decode("utf-16le").rstrip("\0") == "BCD00000000"
+assert h.get_value(desc, "System")[1] == struct.pack("<I", 1)
+assert h.get_value(desc, "TreatAsSystem")[1] == struct.pack("<I", 1)
 
-out2 = b.build_bcd(template)                                 # fresh GUIDs each time, still valid
+out2 = b.build_bcd(template)                               # fresh GUIDs each time, still valid
 assert check_integrity(out2) and out2 != out
 try:
     b.build_bcd(b"regf" + b"\0" * 4092 + b"\0" * 64)

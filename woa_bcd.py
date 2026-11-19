@@ -393,5 +393,13 @@ def build_bcd(template, description="Windows 11 ARM64", locale="en-US"):
         e = h.child(els, eid) or h.add_key(els, eid)
         h.delete_value(e, "Element")
         h.add_value(e, "Element", vtype, data)
+    # bcdboot marks the store as the system store; without these the BCD API refuses to
+    # open it (Windows boots, then specialize fails: "File is not system store" 0xC0000098)
+    desc = h.find("Description")
+    for name, vtype, data in (("KeyName", REG_SZ, _utf16z("BCD00000000")),
+                              ("System", REG_DWORD, struct.pack("<I", 1)),
+                              ("TreatAsSystem", REG_DWORD, struct.pack("<I", 1))):
+        h.delete_value(desc, name)
+        h.add_value(desc, name, vtype, data)
     return h.to_bytes()
 
